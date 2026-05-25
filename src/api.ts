@@ -37,7 +37,7 @@ export interface RoomRecord {
   consumptions?: ConsumptionLog[];
 }
 
-export type Role = 'frontdesk' | 'chinese' | 'western' | 'activity' | 'cafe';
+export type Role = 'frontdesk' | 'chinese' | 'western' | 'activity' | 'cafe' | 'manager';
 
 export interface User {
   role: Role;
@@ -63,6 +63,7 @@ export const ROLE_ACTIVITIES: Record<Role, string[]> = {
   western: ['westernLunch', 'westernDinner'],
   activity: ['seasonalActivity', 'jamDiy', 'vinegarDiy'],
   cafe: ['afternoonTea'],
+  manager: Object.keys(ACTIVITY_DICT),
 };
 
 export const login = async (password: string): Promise<{ token: string; user: User } | null> => {

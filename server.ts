@@ -269,6 +269,10 @@ async function startServer() {
         role = "cafe";
         name = "咖啡廳";
         break;
+      case "6666":
+        role = "manager";
+        name = "主管核查看板";
+        break;
       default:
         return res.status(401).json({ error: "密碼錯誤 (Invalid password)" });
     }

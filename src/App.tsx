@@ -23,7 +23,10 @@ import {
   ChevronDown,
   ChevronUp,
   Search,
-  Users
+  Users,
+  Undo2,
+  AlertTriangle,
+  Calendar
 } from 'lucide-react';
 
 const getDurationSuffix = (nights: number): string => {
@@ -255,6 +258,27 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Custom modal states to bypass standard browser alert/confirm iframe blockage
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    onCancel?: () => void;
+  } | null>(null);
+
+  const [alertModal, setAlertModal] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
+
+  const triggerConfirm = (title: string, message: string, onConfirm: () => void) => {
+    setConfirmModal({ title, message, onConfirm });
+  };
+
+  const triggerAlert = (title: string, message: string) => {
+    setAlertModal({ title, message });
+  };
+
   // Filter & tab states
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'individual' | 'group'>('individual');
@@ -363,6 +387,106 @@ export default function App() {
       grandConsumed,
     };
   }, [DEPARTMENTS, dailySummary]);
+
+  // 今日特定日期的成功核銷詳細明細
+  const detailedConsumptions = React.useMemo(() => {
+    const list: {
+      id: string;
+      roomId: string;
+      roomNumber: string;
+      guestName: string;
+      activityKey: string;
+      activityName: string;
+      count: number;
+      consumedAt: string;
+      timeStr: string;
+    }[] = [];
+
+    rooms.forEach(room => {
+      if (room.consumptions) {
+        room.consumptions.forEach(c => {
+          if (c.date === selectedDate) {
+            let timeFormatted = "";
+            try {
+              if (c.consumedAt) {
+                const d = new Date(c.consumedAt);
+                timeFormatted = d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+              }
+            } catch(e) {}
+
+            list.push({
+              id: c.id,
+              roomId: room.id,
+              roomNumber: room.roomNumber,
+              guestName: room.guestName,
+              activityKey: c.activityKey,
+              activityName: ACTIVITY_DICT[c.activityKey] || c.activityKey,
+              count: c.count,
+              consumedAt: c.consumedAt,
+              timeStr: timeFormatted || "核銷紀錄"
+            });
+          }
+        });
+      }
+    });
+
+    // 依核銷時間倒序排列（最新在最前）
+    return list.sort((a, b) => b.consumedAt.localeCompare(a.consumedAt));
+  }, [rooms, selectedDate]);
+
+  // 今日素食需求統計
+  const vegetarianSummary = React.useMemo(() => {
+    let totalVegCount = 0;
+    const vegRooms: string[] = [];
+    rooms.forEach(room => {
+      const nights = getNightsFromGuestName(room.guestName);
+      const stayDates = getStayDaysList(room.checkInDate, nights);
+      if (stayDates.includes(selectedDate) && (room.vegetarianCount || 0) > 0) {
+        totalVegCount += room.vegetarianCount || 0;
+        vegRooms.push(room.roomNumber);
+      }
+    });
+    return { totalVegCount, vegRooms };
+  }, [rooms, selectedDate]);
+
+  // 今日含有客製特殊客製備註的房號列表
+  const roomsWithNotes = React.useMemo(() => {
+    return rooms.filter(room => {
+      const nights = getNightsFromGuestName(room.guestName);
+      const stayDates = getStayDaysList(room.checkInDate, nights);
+      return stayDates.includes(selectedDate) && room.notes && room.notes.trim() !== "";
+    });
+  }, [rooms, selectedDate]);
+
+  // 今日退房但仍有未核銷配額/餘額的警告提醒
+  const checkoutWarnings = React.useMemo(() => {
+    const warnings: { roomNumber: string; guestName: string; unusedCount: number; items: string[] }[] = [];
+    rooms.forEach(room => {
+      const nights = getNightsFromGuestName(room.guestName);
+      const stayDates = getStayDaysList(room.checkInDate, nights);
+      const checkOutDateStr = stayDates[stayDates.length - 1]; // 最後一天即退房日
+      if (checkOutDateStr === selectedDate) {
+        const unusedItems: string[] = [];
+        let unusedCount = 0;
+        Object.entries(room.activities).forEach(([key, value]) => {
+          const stats = value as ActivityCounts;
+          if (stats && stats.total > stats.consumed) {
+            unusedCount += (stats.total - stats.consumed);
+            unusedItems.push(`${ACTIVITY_DICT[key] || key}: 剩 ${stats.total - stats.consumed} 份`);
+          }
+        });
+        if (unusedCount > 0) {
+          warnings.push({
+            roomNumber: room.roomNumber,
+            guestName: room.guestName,
+            unusedCount,
+            items: unusedItems
+          });
+        }
+      }
+    });
+    return warnings;
+  }, [rooms, selectedDate]);
 
   // Front desk new room states
   const [isAdding, setIsAdding] = useState(false);
@@ -615,6 +739,22 @@ export default function App() {
         if (!newGuestName.trim()) { alert("請輸入團體名稱"); return; }
         if (groupRooms.some(r => !r.roomNo.trim())) { alert("請填寫所有房號"); return; }
  
+        // 驗證是否有重複房號 (團體本身是否有重複，或是否有重複已存在於資料庫)
+        const allNewGroupRoomNos = groupRooms.map(r => r.roomNo.trim());
+        const hasSelfDuplicate = new Set(allNewGroupRoomNos).size !== allNewGroupRoomNos.length;
+        if (hasSelfDuplicate) {
+          alert("⚠️ 錯誤：名單中填寫的房號有重複，請仔細檢查！");
+          return;
+        }
+
+        for (const r of groupRooms) {
+          const matched = rooms.find(ex => ex.roomNumber === r.roomNo.trim());
+          if (matched) {
+            alert(`⚠️ 房號 [${r.roomNo.trim()}] 重複！該房目前已登記給 [${matched.guestName || '其他客人'}]。請確認房號是否正確或是否已有人入住。`);
+            return;
+          }
+        }
+
         const nameWithSuffix = newGuestName.replace(/\s*\(\d+天\d+夜\)/g, '') + getDurationSuffix(stayNights);
  
         for (let i = 0; i < groupRooms.length; i++) {
@@ -636,6 +776,13 @@ export default function App() {
       } else {
         if (!newRoomNo.trim() || !newGuestName.trim()) { alert("請輸入房號及代表姓名"); return; }
         
+        // 驗證是否重疊房號
+        const matched = rooms.find(ex => ex.roomNumber === newRoomNo.trim());
+        if (matched) {
+          alert(`⚠️ 房號 [${newRoomNo.trim()}] 重複！該房目前已登記給 [${matched.guestName || '其他客人'}]。請確認房號是否正確或是否已有人入住。`);
+          return;
+        }
+
         const nameWithSuffix = newGuestName.replace(/\s*\(\d+天\d+夜\)/g, '') + getDurationSuffix(stayNights);
         const formattedActivities: any = {};
         Object.keys(newActivities).forEach(k => {
@@ -683,29 +830,39 @@ export default function App() {
     }
   };
 
-  const handleDeleteRoom = async (roomId: string) => {
-    if (!confirm('確定要刪除此房間紀錄嗎？')) return;
-    try {
-      await deleteRoom(roomId);
-      loadRooms();
-    } catch (err: any) {
-      alert(err.message);
-    }
+  const handleDeleteRoom = (roomId: string) => {
+    triggerConfirm(
+      '確認是否刪除該房間紀錄？',
+      '確定要刪除此房間紀錄嗎？刪除後資訊將無法恢復。',
+      async () => {
+        try {
+          await deleteRoom(roomId);
+          loadRooms();
+        } catch (err: any) {
+          triggerAlert('刪除客房失敗', err.message);
+        }
+      }
+    );
   };
 
-  const handleDeleteGroup = async (groupName: string, roomsInGroup: RoomRecord[]) => {
-    if (!confirm(`確定要刪除整個團體專案【${groupName}】嗎？\n將會一次刪除本團體共 ${roomsInGroup.length} 間房：\n${roomsInGroup.map(r => r.roomNumber).join(', ')}`)) return;
-    try {
-      setLoading(true);
-      for (const r of roomsInGroup) {
-        await deleteRoom(r.id);
+  const handleDeleteGroup = (groupName: string, roomsInGroup: RoomRecord[]) => {
+    triggerConfirm(
+      '確認是否刪除整個團體？',
+      `確定要刪除整個團體【${groupName}】嗎？\n這將會一次刪除本團體共 ${roomsInGroup.length} 間房：\n${roomsInGroup.map(r => r.roomNumber).join(', ')}`,
+      async () => {
+        try {
+          setLoading(true);
+          for (const r of roomsInGroup) {
+            await deleteRoom(r.id);
+          }
+          loadRooms();
+        } catch (err: any) {
+          triggerAlert('刪除團體失敗', err.message);
+        } finally {
+          setLoading(false);
+        }
       }
-      loadRooms();
-    } catch (err: any) {
-      alert('刪除團體失敗: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
+    );
   };
 
   const addGroupRoomRow = () => {
@@ -757,7 +914,7 @@ export default function App() {
           <div className="mt-8 text-xs text-slate-400 text-center bg-slate-50 p-4 rounded-xl border border-slate-100">
             <p className="font-bold mb-1">測試帳號參考：</p>
             <p>櫃檯: 1111 | 中式: 2222 | 西式: 3333 </p>
-            <p>活動組: 4444 | 咖啡廳: 5555</p>
+            <p>活動組: 4444 | 咖啡廳: 5555 | 主管巡檢: 6666</p>
           </div>
         </div>
       </div>
@@ -833,7 +990,7 @@ export default function App() {
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
         {/* Front Desk specific controls */}
-        {user.role === 'frontdesk' && (
+        {(user.role === 'frontdesk' || user.role === 'manager') && (
           <div className="mb-8">
             <div className="rounded-2xl border border-[#E5E1D8] bg-white p-6 shadow-sm">
               <div className="flex justify-between items-center mb-4">
@@ -1196,7 +1353,161 @@ export default function App() {
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
           
           {/* 左側：現有的核銷與名單介面 */}
-          <div className="xl:col-span-8 space-y-6">
+          <div className={`${user.role === 'manager' ? 'xl:col-span-8' : 'xl:col-span-12'} space-y-6`}>
+            
+            {/* ⚡️ 各部門快速搜尋房號一鍵核銷快捷面板 */}
+            {searchQuery.trim() !== "" && (
+              <div className="bg-amber-50/50 border-2 border-amber-300 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4 text-left animate-fade-in">
+                <div className="flex items-center justify-between border-b border-amber-200 pb-2.5">
+                  <span className="font-extrabold text-amber-955 flex items-center gap-2 text-sm uppercase tracking-wide">
+                    <span className="text-lg animate-bounce">⚡️</span>
+                    <span>房號「{searchQuery}」快速核銷特快通道</span>
+                  </span>
+                  <span className="text-[10px] font-black text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-200 uppercase tracking-widest animate-pulse">
+                    即時核對與沖銷
+                  </span>
+                </div>
+
+                {(() => {
+                  const cleanedQuery = searchQuery.trim().toLowerCase();
+                  // 篩選出房號部分或完全符合搜尋詞
+                  const matchedRooms = rooms.filter(r => r.roomNumber.toLowerCase().includes(cleanedQuery));
+
+                  if (matchedRooms.length === 0) {
+                    return (
+                      <div className="py-4 text-center text-slate-400 text-xs font-semibold">
+                        找不到符合房號「{searchQuery}」的客房記錄，請再次確認。
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      {matchedRooms.map(room => {
+                        const dailyStates = getRoomDailyActivitiesList(room);
+                        const allowedActivities = ROLE_ACTIVITIES[user.role] || [];
+                        
+                        // 只拉出該部門有權限核銷＆並且在此日期有配額總量 > 0 的項目
+                        const todayDeptActivities = dailyStates.filter(ds => 
+                          ds.date === selectedDate && 
+                          ds.total > 0 && 
+                          allowedActivities.includes(ds.activityKey)
+                        );
+
+                        if (todayDeptActivities.length === 0) {
+                          return (
+                            <div key={room.id} className="p-3 bg-white border border-stone-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 opacity-65">
+                              <div>
+                                <span className="font-mono text-xs font-bold bg-slate-100 px-2 py-0.5 rounded mr-2 text-slate-600">
+                                  {room.roomNumber} 房
+                                </span>
+                                <span className="text-xs font-bold text-slate-700">{room.guestName}</span>
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-bold bg-slate-50 border border-slate-100 px-2 py-0.5 rounded">
+                                本日無此部門可核銷之額度項目
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div key={room.id} className="p-4 bg-white border-2 border-[#3A5A40]/30 hover:border-[#3A5A40] rounded-xl shadow-xs transition-colors space-y-3">
+                            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                              <div>
+                                <span className="font-mono text-sm font-black bg-[#3A5A40] text-white px-2.5 py-1 rounded-lg mr-2 shadow-2xs">
+                                  {room.roomNumber} 房
+                                </span>
+                                <span className="text-sm font-extrabold text-slate-800">{room.guestName}</span>
+                              </div>
+                              <span className="text-[11px] text-slate-400 font-bold">
+                                入住日: {room.checkInDate}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                              {todayDeptActivities.map(act => {
+                                const remaining = act.total - act.consumed;
+                                const isFullyUsed = remaining <= 0;
+                                const actName = ACTIVITY_DICT[act.activityKey] || act.activityKey;
+
+                                return (
+                                  <div key={act.activityKey} className="bg-slate-55 border border-slate-200 rounded-lg p-2.5 flex flex-col justify-between hover:bg-slate-100/50 transition-colors">
+                                    <div className="flex justify-between items-start mb-2">
+                                      <div className="flex flex-col">
+                                        <span className="text-xs font-black text-slate-700">{actName}</span>
+                                        <span className="text-[10.5px] text-slate-400 font-bold mt-0.5">
+                                          本日額度: <strong className="text-slate-700">{act.total}</strong> 份 ｜ 已核: <strong className={isFullyUsed ? "text-emerald-700 font-extrabold" : "text-[#3A5A40]"}>{act.consumed}</strong> 份
+                                        </span>
+                                      </div>
+                                      <span className={`text-[10px] px-2 py-0.5 rounded font-black ${isFullyUsed ? 'bg-emerald-50 text-emerald-800 border border-emerald-110' : 'bg-amber-50 text-amber-850 border border-amber-110'}`}>
+                                        {isFullyUsed ? '已核完 ✓' : `剩餘 ${remaining} 份`}
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5 self-end w-full sm:w-auto mt-1 shrink-0">
+                                      {/* Quick consume +1 button */}
+                                      <button
+                                        type="button"
+                                        disabled={isFullyUsed}
+                                        onClick={() => handleConsume(room.id, act.activityKey, 1, selectedDate)}
+                                        className="flex-1 sm:flex-none justify-center rounded-lg bg-[#3A5A40] text-white py-1.5 px-3.5 text-xs font-black hover:bg-[#1B3022] transition-colors disabled:opacity-30 disabled:hover:bg-[#3A5A40] flex items-center gap-1 shadow-3xs active:scale-[0.98]"
+                                      >
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
+                                        <span>確認核銷 +1 份</span>
+                                      </button>
+
+                                      {/* Quick consume ALL button */}
+                                      {!isFullyUsed && remaining > 1 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            triggerConfirm(
+                                              '確認是否一次核銷全部剩餘額度？',
+                                              `確定要將 ${room.roomNumber} 房的「${actName}」剩餘 ${remaining} 份全部一次核銷扣除嗎？`,
+                                              () => {
+                                                handleConsume(room.id, act.activityKey, remaining, selectedDate);
+                                              }
+                                            );
+                                          }}
+                                          className="flex-1 sm:flex-none justify-center rounded-lg bg-amber-500 text-white py-1.5 px-3 text-xs font-black hover:bg-amber-600 transition-colors flex items-center gap-1 shadow-3xs active:scale-[0.98]"
+                                        >
+                                          <span>全扣 ({remaining} 份)</span>
+                                        </button>
+                                      )}
+
+                                      {/* Reversal / undo button */}
+                                      {act.consumed > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            triggerConfirm(
+                                              '確認是否撤銷部分核銷？',
+                                              `確定要還原 1 份房號 ${room.roomNumber} 在今日已核銷的「${actName}」嗎？`,
+                                              () => {
+                                                handleConsume(room.id, act.activityKey, -1, selectedDate);
+                                              }
+                                            );
+                                          }}
+                                          className="text-slate-400 hover:text-red-650 hover:bg-red-50 p-1.5 rounded-lg border border-transparent hover:border-red-100 transition-all"
+                                          title="減少/撤銷 1 份核銷"
+                                        >
+                                          <Undo2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
             {/* Room List grid */}
             {activeTab === 'individual' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1258,7 +1569,7 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex items-center space-x-1.5 shrink-0">
-                      {user.role === 'frontdesk' && (
+                      {(user.role === 'frontdesk' || user.role === 'manager') && (
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1281,7 +1592,7 @@ export default function App() {
                   {!isRoomCollapsed && (
                     <div className="p-6 flex-1 bg-white space-y-6">
                   {/* Vegetarian & Remarks Section */}
-                  {user.role === 'frontdesk' ? (
+                  {(user.role === 'frontdesk' || user.role === 'manager') ? (
                     <div className="bg-[#FAF9F5] border border-[#E5E1D8] rounded-xl p-3.5 space-y-3 shadow-3xs">
                       <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">房客備註與素食設定</div>
                       <div className="flex items-center justify-between gap-3">
@@ -1348,7 +1659,7 @@ export default function App() {
                   )}
 
                    {/* For frontline desk, show master controllers */}
-                   {user.role === 'frontdesk' ? (
+                   {(user.role === 'frontdesk' || user.role === 'manager') ? (
                      <div className="space-y-2">
                        <div className="flex items-center justify-between border-b border-stone-150 pb-1.5">
                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">專案套裝額度明細</h4>
@@ -1474,7 +1785,7 @@ export default function App() {
                                             </div>
                                           )}
                                           
-                                          {user.role === 'frontdesk' && (
+                                          {(user.role === 'frontdesk' || user.role === 'manager') && (
                                             <div className="text-[10px] text-slate-400 font-bold">
                                               {isDone ? '✓ 已核銷' : `${ds.total - ds.consumed} 份待用`}
                                             </div>
@@ -1569,7 +1880,7 @@ export default function App() {
                     </div>
                     
                     <div className="flex items-center gap-3 self-end md:self-auto">
-                      {user.role === 'frontdesk' && (
+                      {(user.role === 'frontdesk' || user.role === 'manager') && (
                         <button
                           type="button"
                           onClick={() => handleDeleteGroup(groupName, roomsInGroup)}
@@ -1626,7 +1937,7 @@ export default function App() {
                           </span>
                         </div>
                         
-                        {user.role === 'frontdesk' ? (
+                        {(user.role === 'frontdesk' || user.role === 'manager') ? (
                           <div className="space-y-4">
                             <div className="flex items-center justify-between gap-3 bg-white p-2.5 rounded-xl border border-[#E5E1D8]">
                               <span className="font-bold text-slate-600">整團素食小計總人數 (全團合併計):</span>
@@ -1867,7 +2178,7 @@ export default function App() {
                                   ({getNightsAndPeople(room).people} 人, {getNightsAndPeople(room).nights} 晚)
                                 </span>
                               </div>
-                              {user.role === 'frontdesk' && (
+                              {(user.role === 'frontdesk' || user.role === 'manager') && (
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteRoom(room.id)}
@@ -1882,7 +2193,7 @@ export default function App() {
                             {/* Inner room activities */}
                             <div className="p-4 flex-1 space-y-4">
                               {/* For frontline desk, show master controllers optionally */}
-                              {user.role === 'frontdesk' ? (
+                              {(user.role === 'frontdesk' || user.role === 'manager') ? (
                                 <div className="space-y-1.5 pb-2 border-b border-stone-100">
                                   <div className="flex items-center justify-between">
                                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">票卷原始總量</div>
@@ -2010,7 +2321,7 @@ export default function App() {
                                                         </div>
                                                       )}
                                                       
-                                                      {user.role === 'frontdesk' && (
+                                                      {(user.role === 'frontdesk' || user.role === 'manager') && (
                                                         <div className="text-[9px] text-slate-400 font-bold">
                                                           {isDone ? '✓' : `${ds.total - ds.consumed} 份`}
                                                         </div>
@@ -2045,164 +2356,345 @@ export default function App() {
         )}
           </div>
 
-          {/* 右側：今日核銷總覽視窗 */}
-          <div className="xl:col-span-4 bg-white border border-[#E5E1D8] rounded-2xl p-5 shadow-sm space-y-5 sticky top-6">
-            <div className="flex items-center justify-between border-b border-stone-150 pb-3">
-              <div className="flex items-center space-x-2.5">
-                <div className="bg-[#1B3022] text-white p-2 rounded-xl shadow-xs">
-                  <MountainSnow className="w-4 h-4" />
+          {/* 右側：今日核銷總覽與詳細名細主管主控台（僅主管巡檢「6666」看見） */}
+          {user.role === 'manager' && (
+            <div className="xl:col-span-4 bg-white border border-[#E5E1D8] rounded-2xl p-5 shadow-sm space-y-6 sticky top-6">
+              <div className="flex items-center justify-between border-b border-stone-150 pb-3">
+                <div className="flex items-center space-x-2.5">
+                  <div className="bg-[#1B3022] text-white p-2 rounded-xl shadow-xs">
+                    <MountainSnow className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-sm font-bold text-[#1B3022] uppercase tracking-wide">📊 每日核銷進度與明細總覽</h3>
                 </div>
-                <h3 className="text-sm font-bold text-[#1B3022] uppercase tracking-wide">📊 每日核銷進度總覽</h3>
               </div>
-            </div>
 
-            {/* Date selection controls */}
-            <div className="space-y-3.5 bg-[#FAF9F5] border border-[#E5E1D8] p-3.5 rounded-xl">
-              <div className="flex items-center justify-between gap-1 bg-slate-200/50 p-1 rounded-lg">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const d = new Date(selectedDate);
-                    d.setDate(d.getDate() - 1);
-                    setSelectedDate(d.toLocaleDateString('sv'));
-                  }}
-                  className="px-2 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 hover:text-[#1B3022] rounded text-xs px-2.5 py-1 font-bold transition-all shadow-3xs select-none"
-                >
-                  ◀ 前一日
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const tzoffset = (new Date()).getTimezoneOffset() * 60000;
-                    setSelectedDate(new Date(Date.now() - tzoffset).toISOString().slice(0, 10));
-                  }}
-                  className="px-3 py-1.5 bg-[#1B3022] text-white rounded text-xs py-1 font-black transition-all shadow-3xs select-none hover:bg-[#3A5A40]"
-                >
-                  今天
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const d = new Date(selectedDate);
-                    d.setDate(d.getDate() + 1);
-                    setSelectedDate(d.toLocaleDateString('sv'));
-                  }}
-                  className="px-2 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 hover:text-[#1B3022] rounded text-xs px-2.5 py-1 font-bold transition-all shadow-3xs select-none"
-                >
-                  後一日 ▶
-                </button>
-              </div>
-              
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-[11px] font-extrabold text-[#3A5A40]">指定日期:</span>
-                <input
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="text-xs font-mono font-bold bg-white border border-[#E5E1D8] rounded-lg px-2.5 py-1 text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#3A5A40]"
-                />
-              </div>
-            </div>
-
-            {/* Overall progress summary */}
-            {(() => {
-              const total = deptSummary.grandTotal;
-              const consumed = deptSummary.grandConsumed;
-              const pct = total > 0 ? Math.round((consumed / total) * 100) : 0;
-              return (
-                <div className="bg-[#1B3022]/4 border border-[#1B3022]/10 rounded-xl p-4 space-y-3 shadow-3xs">
-                  <div className="flex justify-between items-baseline">
-                    <span className="text-xs font-extrabold text-[#1B3022]">整體核銷進度</span>
-                    <span className="text-xs font-mono font-black text-slate-800">{pct}%</span>
-                  </div>
-                  
-                  <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
-                    <div 
-                      className="bg-[#3A5A40] h-2.5 rounded-full transition-all duration-500" 
-                      style={{ width: `${pct}%` }}
-                    ></div>
-                  </div>
-                  
-                  <div className="grid grid-cols-3 gap-1 text-center pt-2 border-t border-slate-200/60">
-                    <div className="text-left">
-                      <div className="text-[10px] text-slate-400 font-extrabold">總應領</div>
-                      <div className="text-sm font-mono font-black text-slate-700">{total} 份</div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] text-[#3A5A40] font-extrabold">已核銷</div>
-                      <div className="text-sm font-mono font-black text-[#3A5A40]">{consumed} 份</div>
-                    </div>
-                    <div className="text-right border-l border-slate-200">
-                      <div className="text-[10px] text-slate-400 font-extrabold">剩餘份數</div>
-                      <div className="text-sm font-mono font-black text-amber-700">{total - consumed} 份</div>
-                    </div>
-                  </div>
+              {/* Date selection controls */}
+              <div className="space-y-3 bg-[#FAF9F5] border border-[#E5E1D8] p-3.5 rounded-xl">
+                <div className="flex items-center justify-between gap-1 bg-slate-200/50 p-1 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(selectedDate);
+                      d.setDate(d.getDate() - 1);
+                      setSelectedDate(d.toLocaleDateString('sv'));
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 hover:text-[#1B3022] rounded text-xs py-1 font-bold transition-all shadow-3xs select-none"
+                  >
+                    ◀ 前一日
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+                      setSelectedDate(new Date(Date.now() - tzoffset).toISOString().slice(0, 10));
+                    }}
+                    className="px-3 py-1 bg-[#1B3022] text-white rounded text-xs font-black transition-all shadow-3xs select-none hover:bg-[#3A5A40]"
+                  >
+                    今天
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(selectedDate);
+                      d.setDate(d.getDate() + 1);
+                      setSelectedDate(d.toLocaleDateString('sv'));
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 hover:text-[#1B3022] rounded text-xs py-1 font-bold transition-all shadow-3xs select-none"
+                  >
+                    後一日 ▶
+                  </button>
                 </div>
-              );
-            })()}
+                
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] font-extrabold text-[#3A5A40] flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>指定核銷日期:</span>
+                  </span>
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="text-xs font-mono font-bold bg-white border border-[#E5E1D8] rounded-lg px-2.5 py-1 text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#3A5A40]"
+                  />
+                </div>
+              </div>
 
-            {/* Department progress stats */}
-            <div className="space-y-3 pt-1">
-              <span className="text-[10.5px] font-extrabold text-[#1B3022] uppercase tracking-wider block">部門核銷進度明細</span>
-              
-              <div className="space-y-3">
-                {deptSummary.departments.map(dept => {
-                  const hasActivities = dept.total > 0;
-                  const deptPct = dept.total > 0 ? Math.round((dept.consumed / dept.total) * 100) : 0;
-                  
-                  return (
-                    <div key={dept.id} className={`p-3 rounded-xl border transition-all ${
-                      hasActivities ? 'bg-white border-[#E5E1D8] shadow-3xs' : 'bg-slate-50/50 border-slate-100 opacity-60'
-                    }`}>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-xs font-extrabold text-[#1B3022]">{dept.name}</span>
-                        <div className="text-right flex items-center space-x-2">
-                          <span className="text-xs font-mono font-black text-slate-700">
-                            {hasActivities ? `${dept.consumed} / ${dept.total}` : '無活動'}
-                          </span>
-                          {hasActivities && (
-                            <span className="text-[9px] font-extrabold bg-emerald-50 text-emerald-800 px-1.5 py-0.2 rounded border border-emerald-100">
-                              {deptPct}%
-                            </span>
-                          )}
+              {/* Overall progress summary */}
+              {(() => {
+                const total = deptSummary.grandTotal;
+                const consumed = deptSummary.grandConsumed;
+                const pct = total > 0 ? Math.round((consumed / total) * 100) : 0;
+                return (
+                  <div className="bg-[#1B3022]/4 border border-[#1B3022]/10 rounded-xl p-4 space-y-3 shadow-3xs">
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-xs font-extrabold text-[#1B3022]">本日累計總核銷率</span>
+                      <span className="text-xs font-mono font-black text-[#1B3022] bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-100">{pct}%</span>
+                    </div>
+                    
+                    <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+                      <div 
+                        className="bg-[#3A5A40] h-2.5 rounded-full transition-all duration-500" 
+                        style={{ width: `${pct}%` }}
+                      ></div>
+                    </div>
+                    
+                    <div className="grid grid-cols-3 gap-1 text-center pt-2 border-t border-slate-200/60">
+                      <div className="text-left font-sans">
+                        <div className="text-[10px] text-slate-400 font-extrabold">原總配額</div>
+                        <div className="text-xs font-mono font-bold text-slate-700">{total} 份</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-[#3A5A40] font-extrabold">累計核銷</div>
+                        <div className="text-xs font-mono font-bold text-[#3A5A40]">{consumed} 份</div>
+                      </div>
+                      <div className="text-right border-l border-slate-200">
+                        <div className="text-[10px] text-amber-600 font-extrabold">尚待核銷</div>
+                        <div className="text-xs font-mono font-bold text-amber-700">{total - consumed} 份</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* 各部門分流核銷數據 */}
+              <div className="space-y-3 pt-1">
+                <span className="text-[11px] font-extrabold text-[#1B3022] uppercase tracking-wider block">🏢 各部門核銷統計</span>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  {deptSummary.departments.map(dept => {
+                    const hasActivities = dept.total > 0;
+                    const deptPct = dept.total > 0 ? Math.round((dept.consumed / dept.total) * 100) : 0;
+                    
+                    return (
+                      <div key={dept.id} className={`p-2.5 rounded-xl border transition-all text-left flex flex-col justify-between ${
+                        hasActivities ? 'bg-white border-[#E5E1D8] shadow-3xs' : 'bg-slate-50 opacity-55'
+                      }`}>
+                        <div className="flex flex-col mb-1.5">
+                          <span className="text-[11px] font-extrabold text-[#1B3022] truncate">{dept.name}</span>
+                          <div className="text-xs font-mono font-bold text-slate-650 mt-0.5">
+                            {hasActivities ? `${dept.consumed} / ${dept.total}` : '無項目'}
+                          </div>
+                        </div>
+                        
+                        {hasActivities && (
+                          <div className="space-y-1">
+                            <div className="w-full bg-slate-100 rounded-full h-1 overflow-hidden">
+                              <div 
+                                className={`${dept.progressColor} h-1 rounded-full`}
+                                style={{ width: `${deptPct}%` }}
+                              ></div>
+                            </div>
+                            <span className="text-[9px] font-extrabold text-[#3A5A40] block text-right mt-0.5">{deptPct}%</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 今日核銷詳細名單明細 */}
+              <div className="space-y-2.5 pt-2 border-t border-slate-150">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold text-[#1B3022] uppercase tracking-wider block">📝 本日已核銷詳細明細 ({detailedConsumptions.length} 筆)</span>
+                  {detailedConsumptions.length > 0 && (
+                    <span className="text-[9px] font-black text-[#3A5A40] bg-emerald-50 border border-emerald-100 px-1.5 py-0.2 rounded">
+                      即時校對中
+                    </span>
+                  )}
+                </div>
+
+                <div className="bg-[#FAF9F5] border border-[#E5E1D8] rounded-xl p-2.5 space-y-2 max-h-[280px] overflow-y-auto">
+                  {detailedConsumptions.length === 0 ? (
+                    <div className="py-8 text-center text-slate-400 text-xs">
+                      <p className="font-semibold text-slate-500">本日尚無任何核銷紀錄</p>
+                      <p className="text-[10px] text-slate-400 mt-1">房客前往各部門核銷時將即時顯示於此</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {detailedConsumptions.map((log) => (
+                        <div key={log.id} className="flex items-center justify-between text-[11px] bg-white border border-slate-150 rounded-lg p-2 shadow-2xs">
+                          <div className="flex flex-col text-left space-y-0.5">
+                            <div className="flex items-center space-x-1.5">
+                              <span className="font-black text-slate-850 bg-[#3A5A40]/10 border border-[#3A5A40]/25 text-[#1B3022] px-1.5 py-0.2 rounded font-mono text-center">
+                                {log.roomNumber} 房
+                              </span>
+                              <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">{log.timeStr}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-semibold truncate max-w-[130px]">
+                              房客: {log.guestName}
+                            </div>
+                            <div className="text-xs font-extrabold text-slate-750 flex items-center space-x-1 mt-0.5">
+                              <span className="text-[#3A5A40]">●</span>
+                              <span className="truncate max-w-[135px]">{log.activityName}</span>
+                              <span className="text-[#3A5A40] ml-1 font-black bg-emerald-50 text-emerald-800 px-1 rounded">+{log.count}</span>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              triggerConfirm(
+                                '確認是否撤銷此筆核銷紀錄？',
+                                `確定要取消房號 ${log.roomNumber} 在本日核銷的「${log.activityName}」共 ${log.count} 份嗎？`,
+                                () => {
+                                  handleConsume(log.roomId, log.activityKey, -log.count, selectedDate);
+                                }
+                              );
+                            }}
+                            className="hover:bg-red-50 hover:text-red-600 text-slate-400 p-1.5 rounded-md transition-colors border border-transparent hover:border-red-100 mt-auto"
+                            title="點擊撤銷此筆核銷嗎？"
+                          >
+                            <Undo2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 異常警告與貼心營運提醒 */}
+              <div className="space-y-2.5 pt-2 border-t border-slate-150">
+                <span className="text-[11px] font-extrabold text-amber-800 uppercase tracking-wider block">⚠️ 本日營運提醒與警告通知</span>
+                
+                <div className="space-y-2">
+                  {/* 1. Vegetarian Meals Today stats */}
+                  {vegetarianSummary.totalVegCount > 0 && (
+                    <div className="bg-emerald-50/50 border border-emerald-150 rounded-xl p-2.5 flex items-start gap-2 text-[11px]">
+                      <span className="text-emerald-700 text-xs shrink-0 font-bold">🍏</span>
+                      <div className="text-left">
+                        <p className="font-extrabold text-emerald-850">今日素食統計（重要餐點）：</p>
+                        <p className="text-slate-600 mt-0.5 font-medium leading-relaxed">
+                          今日預計供應素食共 <strong className="text-emerald-800 font-black">{vegetarianSummary.totalVegCount} 份</strong>。
+                          包含房號：<span className="p-0.5 font-mono font-bold bg-white border border-slate-150 rounded text-[10px]">{vegetarianSummary.vegRooms.join(', ')}</span>，請廚房提早備料。
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 2. Custom Remarks list */}
+                  {roomsWithNotes.length > 0 && (
+                    <div className="bg-amber-50/40 border border-amber-200 rounded-xl p-2.5 flex items-start gap-2 text-[11px]">
+                      <span className="text-amber-600 text-xs shrink-0 font-bold">✏️</span>
+                      <div className="text-left">
+                        <p className="font-extrabold text-amber-850">房客特殊備註彙整 ({roomsWithNotes.length} 房)：</p>
+                        <div className="space-y-1.5 mt-1">
+                          {roomsWithNotes.map(r => (
+                            <div key={r.id} className="text-[10px] text-stone-705 bg-white border border-stone-200/50 p-1 rounded">
+                              <span className="font-bold text-slate-850 border-r border-[#E5E1D8] pr-1.5 mr-1.5">{r.roomNumber}房</span>
+                              <span className="italic font-bold text-stone-600">{r.notes}</span>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                      
-                      {hasActivities && (
-                        <div className="space-y-2 pt-1 border-t border-slate-100/65">
-                          {/* Progress Bar for dept */}
-                          <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                            <div 
-                              className={`${dept.progressColor} h-1.5 rounded-full`}
-                              style={{ width: `${deptPct}%` }}
-                            ></div>
-                          </div>
-
-                          {/* Activities elements */}
-                          <div className="space-y-1">
-                            {dept.items.map(item => {
-                              if (item.total === 0) return null;
-                              const itemPct = item.total > 0 ? Math.round((item.consumed / item.total) * 100) : 0;
-                              return (
-                                <div key={item.key} className="flex justify-between items-center text-[10px] text-slate-600 bg-slate-50/55 p-1 px-2 rounded-md border border-slate-100">
-                                  <span className="truncate max-w-[120px] font-bold text-slate-700">{item.name}</span>
-                                  <span className="font-mono font-bold text-slate-800">
-                                    {item.consumed} / {item.total} <span className="text-slate-400 font-extrabold">({itemPct}%)</span>
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
                     </div>
-                  );
-                })}
+                  )}
+
+                  {/* 3. Checkout unused warning (Abnormalities/Warnings) */}
+                  {checkoutWarnings.length > 0 ? (
+                    <div className="bg-red-50/50 border border-red-200/80 rounded-xl p-2.5 flex items-start gap-2 text-[11px]">
+                      <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+                      <div className="text-left">
+                        <p className="font-extrabold text-red-800">今日退房未用畢活動提醒 ({checkoutWarnings.length} 房)：</p>
+                        <p className="text-[10px] text-slate-500 font-semibold mb-1">
+                          以下客房今日退房，但仍有配額尚未經任何部門核銷完畢，櫃檯可於結帳退房時提醒與確認：
+                        </p>
+                        <div className="space-y-1 bg-white border border-red-100 p-1.5 rounded-lg max-h-[140px] overflow-y-auto w-full">
+                          {checkoutWarnings.map(c => (
+                            <div key={c.roomNumber} className="text-[10px] text-slate-700 border-b border-stone-100 last:border-b-0 pb-1 mb-1 last:mb-0 last:pb-0">
+                              <div className="font-black text-red-700 flex justify-between items-baseline">
+                                <span>🚪 {c.roomNumber} 房 ({c.guestName.split(' ')[0]})</span>
+                                <span className="text-[9px] bg-red-100 px-1 py-0.2 rounded font-extrabold text-red-650">剩 {c.unusedCount} 份</span>
+                              </div>
+                              <div className="text-[9px] text-slate-400 font-semibold mt-0.5 leading-tight">
+                                {c.items.join(' / ')}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-55 border border-slate-150 rounded-xl p-2 flex items-center justify-center gap-1.5 py-3 text-[10px] text-slate-400 font-black">
+                      <span>✓ 本日退房房客之活動進度皆已結清</span>
+                    </div>
+                  )}
+                </div>
               </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Custom Confirmation Modal */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-4 backdrop-blur-2xs">
+          <div className="bg-white border-2 border-stone-200 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center space-x-3 text-amber-600">
+              <div className="bg-amber-100 p-2.5 rounded-full shrink-0">
+                <AlertTriangle className="w-6 h-6 text-amber-700" />
+              </div>
+              <h3 className="text-base font-black text-slate-850">{confirmModal.title || '系統確認'}</h3>
+            </div>
+            
+            <p className="text-sm font-semibold text-slate-600 whitespace-pre-wrap leading-relaxed text-left">
+              {confirmModal.message}
+            </p>
+            
+            <div className="flex justify-end items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirmModal.onCancel) confirmModal.onCancel();
+                  setConfirmModal(null);
+                }}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className="px-4 py-2 bg-red-650 hover:bg-red-750 text-white font-black rounded-xl text-xs transition-all cursor-pointer shadow-3xs"
+              >
+                確認執行
+              </button>
             </div>
           </div>
         </div>
-      </main>
+      )}
+
+      {/* Custom Alert Modal */}
+      {alertModal && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/65 p-4 backdrop-blur-2xs">
+          <div className="bg-white border-2 border-red-250 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center space-x-3 text-red-600">
+              <div className="bg-red-50 p-2.5 rounded-full shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600 animate-pulse" />
+              </div>
+              <h3 className="text-sm font-black text-red-800">{alertModal.title || '系統提示'}</h3>
+            </div>
+            
+            <p className="text-xs font-bold text-slate-600 leading-relaxed whitespace-pre-wrap text-left">
+              {alertModal.message}
+            </p>
+            
+            <div className="flex justify-end items-center pt-2">
+              <button
+                type="button"
+                onClick={() => setAlertModal(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-xl text-xs transition-all cursor-pointer"
+              >
+                確 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer Status Bar */}
       <footer className="flex h-10 items-center justify-between bg-white px-8 text-[10px] uppercase tracking-tighter text-slate-400 border-t border-[#E5E1D8] mt-auto">
