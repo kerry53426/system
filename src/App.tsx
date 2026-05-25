@@ -21,6 +21,7 @@ import {
   Trash2,
   Coffee,
   Utensils,
+  UtensilsCrossed,
   Sun,
   ChevronDown,
   ChevronUp,
@@ -42,6 +43,24 @@ const getDurationSuffix = (nights: number): string => {
     7: ' (8天7夜)'
   };
   return map[nights] || ` (${nights + 1}天${nights}夜)`;
+};
+
+const getLionSupperSoup = (checkInDate?: string): string => {
+  if (!checkInDate) return "紅豆湯 / 綠豆湯";
+  try {
+    const parts = checkInDate.split('-');
+    if (parts.length >= 2) {
+      const month = parseInt(parts[1], 10);
+      if (month >= 5 && month <= 10) {
+        return "綠豆湯";
+      } else {
+        return "紅豆湯";
+      }
+    }
+  } catch (e) {
+    // fallback
+  }
+  return "紅豆湯";
 };
 
 const getNightsFromGuestName = (guestName: string): number => {
@@ -288,6 +307,8 @@ export default function App() {
   const [collapsedRooms, setCollapsedRooms] = useState<Record<string, boolean>>({});
   const [editingQuotaRooms, setEditingQuotaRooms] = useState<Record<string, boolean>>({});
   const [isBatchProcessing, setIsBatchProcessing] = useState<string | null>(null);
+  const [isChineseReportCollapsed, setIsChineseReportCollapsed] = useState(false);
+  const [chineseReportMealFilter, setChineseReportMealFilter] = useState<'all' | 'breakfast' | 'lunch' | 'dinner' | 'supper'>('all');
 
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const tzoffset = (new Date()).getTimezoneOffset() * 60000;
@@ -488,6 +509,134 @@ export default function App() {
       }
     });
     return warnings;
+  }, [rooms, selectedDate]);
+
+  // 中式餐廳當日餐點與素食及備註即時彙總看板數據
+  const chineseRestaurantReport = React.useMemo(() => {
+    let breakfastTotal = 0;
+    let breakfastConsumed = 0;
+
+    let lunchTotal = 0;
+    let lunchConsumed = 0;
+    let lunchVegetarian = 0;
+
+    let dinnerTotal = 0;
+    let dinnerConsumed = 0;
+    let dinnerVegetarian = 0;
+
+    let redBeanSoupTotal = 0;
+    let greenBeanSoupTotal = 0;
+
+    const roomsWithMeals: {
+      roomNumber: string;
+      guestName: string;
+      groupType?: string;
+      mealsText: string;
+      vegetarianCount: number;
+      notes: string;
+      hasBreakfast?: boolean;
+      hasLunch?: boolean;
+      hasDinner?: boolean;
+      hasSupper?: boolean;
+      breakfastCount?: number;
+      lunchCount?: number;
+      dinnerCount?: number;
+      supperCount?: number;
+    }[] = [];
+
+    rooms.forEach(room => {
+      const nights = getNightsFromGuestName(room.guestName);
+      const stayDates = getStayDaysList(room.checkInDate, nights);
+      if (!stayDates.includes(selectedDate)) return;
+
+      const dailyStates = getRoomDailyActivitiesList(room);
+      
+      const bState = dailyStates.find(ds => ds.date === selectedDate && ds.activityKey === 'chineseBreakfast');
+      const lState = dailyStates.find(ds => ds.date === selectedDate && (ds.activityKey === 'chineseLunch' || ds.activityKey === 'chineseLunchSecondDay'));
+      const dState = dailyStates.find(ds => ds.date === selectedDate && ds.activityKey === 'chineseDinner');
+
+      const bTotal = bState?.total || 0;
+      const bConsumed = bState?.consumed || 0;
+
+      const lTotal = lState?.total || 0;
+      const lConsumed = lState?.consumed || 0;
+
+      const dTotal = dState?.total || 0;
+      const dConsumed = dState?.consumed || 0;
+
+      breakfastTotal += bTotal;
+      breakfastConsumed += bConsumed;
+
+      lunchTotal += lTotal;
+      lunchConsumed += lConsumed;
+      if (lTotal > 0 && room.vegetarianCount) {
+        lunchVegetarian += Math.min(lTotal, room.vegetarianCount);
+      }
+
+      dinnerTotal += dTotal;
+      dinnerConsumed += dConsumed;
+      if (dTotal > 0 && room.vegetarianCount) {
+        dinnerVegetarian += Math.min(dTotal, room.vegetarianCount);
+      }
+
+      // Calculate Late-night Supper for Lion Tour rooms during active stay nights
+      const isLionSupperDate = room.groupType === 'lion' && stayDates.slice(0, nights).includes(selectedDate);
+      const supperSoup = isLionSupperDate ? getLionSupperSoup(room.checkInDate) : '';
+      const supperCount = isLionSupperDate ? getNightsAndPeople(room).people : 0;
+
+      if (isLionSupperDate) {
+        if (supperSoup === "綠豆湯") {
+          greenBeanSoupTotal += supperCount;
+        } else {
+          redBeanSoupTotal += supperCount;
+        }
+      }
+
+      // 只要該日該客房有預訂任何中式餐點或含有宵夜，就列入備註彙整名單
+      if (bTotal > 0 || lTotal > 0 || dTotal > 0 || supperCount > 0) {
+        const meals: string[] = [];
+        if (bTotal > 0) meals.push(`早餐 × ${bTotal}`);
+        if (lTotal > 0) {
+          const isL2 = lState?.activityKey === 'chineseLunchSecondDay';
+          meals.push(`${isL2 ? 'CL2二日午餐' : 'CL餐券午餐'} × ${lTotal}`);
+        }
+        if (dTotal > 0) meals.push(`晚餐 × ${dTotal}`);
+        if (supperCount > 0) {
+          meals.push(`宵夜(${supperSoup}) × ${supperCount}`);
+        }
+
+        roomsWithMeals.push({
+          roomNumber: room.roomNumber,
+          guestName: room.guestName,
+          groupType: room.groupType,
+          mealsText: meals.join(', '),
+          vegetarianCount: room.vegetarianCount || 0,
+          notes: room.notes || '',
+          hasBreakfast: bTotal > 0,
+          hasLunch: lTotal > 0,
+          hasDinner: dTotal > 0,
+          hasSupper: supperCount > 0,
+          breakfastCount: bTotal,
+          lunchCount: lTotal,
+          dinnerCount: dTotal,
+          supperCount: supperCount
+        });
+      }
+    });
+
+    return {
+      breakfastTotal,
+      breakfastConsumed,
+      lunchTotal,
+      lunchConsumed,
+      lunchVegetarian,
+      dinnerTotal,
+      dinnerConsumed,
+      dinnerVegetarian,
+      redBeanSoupTotal,
+      greenBeanSoupTotal,
+      roomsWithMeals
+    };
   }, [rooms, selectedDate]);
 
   // Front desk new room states
@@ -1295,6 +1444,293 @@ export default function App() {
           </div>
         )}
 
+        {/* 中式餐廳 & 主管：當日餐時統計配額與特別備註 (All Rooms Table) */}
+        {(user.role === 'chinese' || user.role === 'manager') && (
+          <div className="mb-8 rounded-2xl border border-amber-200/80 bg-gradient-to-br from-[#FCFBF7] to-[#FAF9F5] p-5 sm:p-6 shadow-xs">
+            <div className={`flex flex-col md:flex-row md:items-center justify-between gap-4 ${isChineseReportCollapsed ? '' : 'border-b border-amber-200 pb-4 mb-5'}`}>
+              <div className="flex items-center space-x-3">
+                <div className="bg-amber-600 text-white p-2.5 rounded-xl shadow-3xs">
+                  <UtensilsCrossed className="w-5 h-5 text-amber-50" />
+                </div>
+                <div>
+                  <h2 className="text-base sm:text-lg font-black text-slate-800 tracking-tight flex items-center gap-2">
+                    <span>中式餐廳當日備餐彙整報告</span>
+                    <span className="hidden sm:inline bg-amber-100 text-amber-900 text-[10px] font-black px-2 py-0.5 rounded border border-amber-200">廚房即時監控面板</span>
+                  </h2>
+                  <p className="text-xs text-slate-500 font-bold mt-1">
+                    指定日期：<strong className="text-amber-800">{formatDateWithDayOfWeek(selectedDate)}</strong> 總覽 （包含所有散客與團體之當天中式餐點配額）
+                  </p>
+                </div>
+              </div>
+
+              {/* Quick switcher & Collapse trigger inside report (for chefs convenience) */}
+              <div className="flex flex-wrap items-center gap-2 self-end md:self-auto shrink-0">
+                <div className="flex items-center gap-1.5 bg-white border border-[#E5E1D8] p-1 rounded-xl shadow-3xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(selectedDate);
+                      d.setDate(d.getDate() - 1);
+                      setSelectedDate(d.toLocaleDateString('sv'));
+                    }}
+                    className="px-2.5 py-1.5 hover:bg-slate-50 text-slate-600 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                  >
+                    ◀ 前一日
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+                      setSelectedDate(new Date(Date.now() - tzoffset).toISOString().slice(0, 10));
+                    }}
+                    className="px-3 py-1.5 bg-[#3A5A40] hover:bg-[#1B3022] text-white text-xs font-black rounded-lg transition-colors cursor-pointer"
+                  >
+                    今天
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(selectedDate);
+                      d.setDate(d.getDate() + 1);
+                      setSelectedDate(d.toLocaleDateString('sv'));
+                    }}
+                    className="px-2.5 py-1.5 hover:bg-slate-50 text-slate-600 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                  >
+                    後一日 ▶
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsChineseReportCollapsed(prev => !prev)}
+                  className="flex items-center gap-1 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 px-3 py-2 rounded-xl text-xs font-black transition-all active:scale-95 shadow-3xs cursor-pointer"
+                >
+                  {isChineseReportCollapsed ? (
+                    <>
+                      <ChevronDown className="w-4 h-4 text-amber-800" />
+                      <span>展開報告</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronUp className="w-4 h-4 text-amber-800" />
+                      <span>收闔報告</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Compact overview when collapsed */}
+            {isChineseReportCollapsed && (
+              <div className="mt-4 pt-4 border-t border-amber-250/60 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-black text-slate-700 animate-fade-in">
+                <span className="text-amber-900 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded text-[10px] font-black uppercase">今日備餐總彙</span>
+                <span className="flex items-center gap-1">🥐 早餐 (B): <strong className="text-amber-900 font-extrabold text-sm">{chineseRestaurantReport.breakfastTotal}</strong> 份</span>
+                <span className="text-slate-300">/</span>
+                <span className="flex items-center gap-1">🍱 午餐 (CL/CL2): <strong className="text-emerald-800 font-extrabold text-sm">{chineseRestaurantReport.lunchTotal}</strong> 份 <span className="text-[10px] font-semibold text-emerald-600">(素 {chineseRestaurantReport.lunchVegetarian})</span></span>
+                <span className="text-slate-300">/</span>
+                <span className="flex items-center gap-1">🍲 晚餐 (CD): <strong className="text-indigo-800 font-extrabold text-sm">{chineseRestaurantReport.dinnerTotal}</strong> 份 <span className="text-[10px] font-semibold text-indigo-600">(素 {chineseRestaurantReport.dinnerVegetarian})</span></span>
+                <span className="text-slate-300">/</span>
+                <span className="flex items-center gap-1">🍜 宵夜 (雄獅): <strong className="text-amber-800 font-extrabold text-sm">{chineseRestaurantReport.redBeanSoupTotal + chineseRestaurantReport.greenBeanSoupTotal}</strong> 份 <span className="text-[10px] font-bold text-amber-600">(紅豆{chineseRestaurantReport.redBeanSoupTotal} / 綠豆{chineseRestaurantReport.greenBeanSoupTotal})</span></span>
+              </div>
+            )}
+
+            {!isChineseReportCollapsed && (
+              <>
+                {/* Visual counts grids */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-5 mb-6">
+                  {/* Card 1: Breakfast */}
+                  {(chineseReportMealFilter === 'all' || chineseReportMealFilter === 'breakfast') && (
+                <div className="bg-white border border-stone-200 rounded-xl p-4.5 shadow-3xs flex flex-col justify-between">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">🥐 早餐 (中式早餐B)</span>
+                    <span className="text-[10px] bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded font-black">免分素食</span>
+                  </div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-3xl font-black text-slate-800 tracking-tight">
+                      {chineseRestaurantReport.breakfastTotal}
+                    </span>
+                    <span className="text-xs text-slate-500 font-bold">人份</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-700 font-black mt-3 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-100/50 w-full text-center">
+                    已經核銷用餐：{chineseRestaurantReport.breakfastConsumed} 份 ｜ 剩餘待用餐：{chineseRestaurantReport.breakfastTotal - chineseRestaurantReport.breakfastConsumed} 份
+                  </p>
+                </div>
+              )}
+
+              {/* Card 2: Lunch */}
+              {(chineseReportMealFilter === 'all' || chineseReportMealFilter === 'lunch') && (
+                <div className="bg-white border border-stone-200 rounded-xl p-4.5 shadow-3xs flex flex-col justify-between">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">🍱 午餐 (中餐CL/CL2)</span>
+                    <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded font-black">
+                      🍏 素食共 {chineseRestaurantReport.lunchVegetarian} 份
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-3xl font-black text-slate-800 tracking-tight">
+                      {chineseRestaurantReport.lunchTotal}
+                    </span>
+                    <span className="text-xs text-slate-500 font-bold">人份</span>
+                    <span className="text-xs text-slate-400 font-bold ml-1">(含葷食 {Math.max(0, chineseRestaurantReport.lunchTotal - chineseRestaurantReport.lunchVegetarian)} 份)</span>
+                  </div>
+                  <p className="text-[11px] text-amber-750 font-black mt-3 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-100/50 w-full text-center">
+                    已經核銷用餐：{chineseRestaurantReport.lunchConsumed} 份 ｜ 剩餘待用餐：{chineseRestaurantReport.lunchTotal - chineseRestaurantReport.lunchConsumed} 份
+                  </p>
+                </div>
+              )}
+
+              {/* Card 3: Dinner */}
+              {(chineseReportMealFilter === 'all' || chineseReportMealFilter === 'dinner') && (
+                <div className="bg-white border border-stone-200 rounded-xl p-4.5 shadow-3xs flex flex-col justify-between">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">🍲 晚餐 (中餐CD)</span>
+                    <span className="inline-flex items-center gap-1 text-[11px] bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded font-black">
+                      🍏 素食共 {chineseRestaurantReport.dinnerVegetarian} 份
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-3xl font-black text-slate-800 tracking-tight">
+                      {chineseRestaurantReport.dinnerTotal}
+                    </span>
+                    <span className="text-xs text-slate-500 font-bold">人份</span>
+                    <span className="text-xs text-slate-400 font-bold ml-1">(含葷食 {Math.max(0, chineseRestaurantReport.dinnerTotal - chineseRestaurantReport.dinnerVegetarian)} 份)</span>
+                  </div>
+                  <p className="text-[11px] text-amber-750 font-black mt-3 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-100/50 w-full text-center">
+                    已經核銷用餐：{chineseRestaurantReport.dinnerConsumed} 份 ｜ 剩餘待用餐：{chineseRestaurantReport.dinnerTotal - chineseRestaurantReport.dinnerConsumed} 份
+                  </p>
+                </div>
+              )}
+
+              {/* Card 4: Late-night Supper */}
+              {(chineseReportMealFilter === 'all' || chineseReportMealFilter === 'supper') && (
+                <div className="bg-white border border-stone-200 rounded-xl p-4.5 shadow-3xs flex flex-col justify-between">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">🍜 宵夜 (雄獅團體消夜)</span>
+                    <span className="text-[10px] bg-amber-50 text-amber-900 border border-amber-200 px-1.5 py-0.5 rounded font-black flex items-center gap-0.5">專案免券</span>
+                  </div>
+                  <div className="space-y-1.5 my-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 font-bold">🍂 紅豆湯 (11~4月)</span>
+                      <span className="font-extrabold text-slate-800">
+                        {chineseRestaurantReport.redBeanSoupTotal} 份
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs border-t border-dashed border-stone-100 pt-1.5">
+                      <span className="text-slate-500 font-bold">🌿 綠豆湯 (5~10月)</span>
+                      <span className="font-extrabold text-slate-800">
+                        {chineseRestaurantReport.greenBeanSoupTotal} 份
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-amber-800 font-black mt-3 bg-amber-50 px-2 py-1 rounded-md border border-amber-150 w-full text-center">
+                    本日宵夜總計：{chineseRestaurantReport.redBeanSoupTotal + chineseRestaurantReport.greenBeanSoupTotal} 份
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* List of meal remarks and vegetarian details */}
+            <div className="bg-white border border-[#E5E1D8] rounded-xl overflow-hidden shadow-3xs">
+              {(() => {
+                const filteredRoomsWithMeals = chineseRestaurantReport.roomsWithMeals.filter(r => {
+                  if (chineseReportMealFilter === 'breakfast') return r.hasBreakfast;
+                  if (chineseReportMealFilter === 'lunch') return r.hasLunch;
+                  if (chineseReportMealFilter === 'dinner') return r.hasDinner;
+                  if (chineseReportMealFilter === 'supper') return r.hasSupper;
+                  return true;
+                });
+
+                return (
+                  <>
+                    <div className="bg-[#FAF9F5] px-4 py-2.5 border-b border-[#E5E1D8] flex items-center justify-between">
+                      <span className="text-xs font-black text-[#1B3022] uppercase tracking-wider flex items-center gap-1">
+                        <span>📝 當日客房用餐明細與餐食備註一覽表 ({
+                          chineseReportMealFilter === 'all' ? '全部餐時' :
+                          chineseReportMealFilter === 'breakfast' ? '中式早餐' :
+                          chineseReportMealFilter === 'lunch' ? '午餐CL/CL2' :
+                          chineseReportMealFilter === 'dinner' ? '中式晚餐CD' : '雄獅宵夜'
+                        })</span>
+                      </span>
+                      <span className="text-[10px] text-slate-450 font-bold font-mono">
+                        本類別篩選：共有 {filteredRoomsWithMeals.length} 間客房用餐
+                      </span>
+                    </div>
+
+                    {filteredRoomsWithMeals.length === 0 ? (
+                      <div className="p-8 text-center text-slate-400 text-xs font-bold italic">
+                        指定篩選條件下，無任何客房預訂此中式餐點。
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-400 uppercase tracking-widest border-b border-stone-200 font-bold text-[9px]">
+                              <th className="py-2.5 px-4 w-28">房號</th>
+                              <th className="py-2.5 px-4 w-40">房客姓名 / 團體專案</th>
+                              <th className="py-2.5 px-3 w-56">本日預訂餐點</th>
+                              <th className="py-2.5 px-3 w-28 text-center">素食名額</th>
+                              <th className="py-2.5 px-4">餐食特殊備註事項 (一眼看明、免逐房打開)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-stone-100">
+                            {filteredRoomsWithMeals.map(r => {
+                              const hasVeg = r.vegetarianCount > 0;
+                              const hasNote = r.notes && r.notes.trim() !== "";
+                              
+                              return (
+                                <tr key={r.roomNumber} className="hover:bg-slate-50/70 transition-colors font-semibold">
+                                  <td className="py-3 px-4 font-mono font-black text-slate-850 text-sm">{r.roomNumber} 房</td>
+                                  <td className="py-3 px-4">
+                                    <span className="text-slate-800 font-bold mr-1.5">{r.guestName}</span>
+                                    {r.groupType && r.groupType !== 'none' && (
+                                      <span className={`inline-block text-[9px] px-1.5 py-0.5 rounded text-white font-extrabold ${
+                                        r.groupType === 'lion' ? 'bg-[#8B5E3C]' : r.groupType === 'yirong' ? 'bg-[#D4A373]' : 'bg-[#3A5A40]'
+                                      }`}>
+                                        {r.groupType === 'lion' ? '雄獅 🦁' : r.groupType === 'yirong' ? '怡容' : '一般團'}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <span className="text-slate-600 font-bold">{r.mealsText}</span>
+                                  </td>
+                                  <td className="py-3 px-3 text-center">
+                                    {hasVeg ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-black border border-emerald-150 text-[11px]">
+                                        🍏 {r.vegetarianCount} 人吃素
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-450 font-normal font-mono">-</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    {hasNote ? (
+                                      <span className="text-amber-900 bg-amber-50/50 px-2 py-1.5 rounded border border-amber-200/50 block text-xs leading-relaxed font-bold shadow-3xs">
+                                        {r.notes}
+                                      </span>
+                                    ) : hasVeg ? (
+                                      <span className="text-emerald-700 bg-emerald-50/10 px-2 py-0.5 rounded border border-emerald-100/30 block text-xs text-left italic">
+                                        （僅設素食 {r.vegetarianCount} 名、無其他備註）
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400 italic font-normal text-xs">（無特殊餐食備註）</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          </>
+        )}
+            </div>
+          )}
+
         {/* Search & Tabs Controls */}
         <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
           {/* Tabs */}
@@ -1534,6 +1970,13 @@ export default function App() {
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1">
                         {(() => {
+                          if (room.groupType === 'lion') {
+                            return (
+                              <span className="inline-flex items-center text-[10px] font-extrabold px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 uppercase tracking-wider w-fit">
+                                🦁 雄獅團體專案 | 🍜 宵夜：{getLionSupperSoup(room.checkInDate)} ({room.peopleCount || 2} 份)
+                              </span>
+                            );
+                          }
                           const hasCd = (room.activities.chineseDinner?.total || 0) > 0;
                           const hasCb = (room.activities.chineseBreakfast?.total || 0) > 0;
                           const hasWd = (room.activities.westernDinner?.total || 0) > 0;
@@ -1881,6 +2324,16 @@ export default function App() {
                           {roomsInGroup[0]?.checkInDate && (
                             <span>入住日期：<strong className="text-[#3A5A40] font-bold">{roomsInGroup[0].checkInDate}</strong></span>
                           )}
+                          {groupType === 'lion' && (
+                            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-900 font-extrabold border border-amber-300 shadow-3xs">
+                              🍜 雄獅宵夜：{getLionSupperSoup(roomsInGroup[0]?.checkInDate)} (依預定 {totalPeople} 人份供應)
+                            </span>
+                          )}
+                          {(tourLeaderName || tourLeaderPhone) && (
+                            <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded bg-blue-50 text-blue-900 font-extrabold border border-blue-200 shadow-3xs animate-fade-in" title="領隊聯絡資料">
+                              👤 領隊：{tourLeaderName || '未提供'} ｜ 📞 {tourLeaderPhone || '未提供'}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2054,7 +2507,7 @@ export default function App() {
                           };
                         }).filter(d => d.activities.length > 0);
 
-                        if (groupDailySummary.length === 0) return null;
+                        if (user.role === 'frontdesk' || groupDailySummary.length === 0) return null;
 
                         return (
                           <div className="mb-5 bg-[#FAF9F5] border border-[#3A5A40]/30 rounded-2xl p-4.5 space-y-3.5 shadow-3xs max-w-2xl text-left bg-gradient-to-r from-[#3A5A40]/5 via-[#3A5A40]/3 to-transparent">
