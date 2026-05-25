@@ -5,6 +5,8 @@ import {
   consumeActivity, 
   addRoom, 
   deleteRoom,
+  updateRoom,
+  getOfflineModeStatus,
   User, 
   RoomRecord, 
   ACTIVITY_DICT, 
@@ -701,17 +703,12 @@ export default function App() {
     const newTotal = Math.max(act.consumed, act.total + increment); // can't go below consumed amount
     
     try {
-      const res = await fetch(`/api/rooms/${roomId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          activities: { 
-            ...currentRoom.activities, 
-            [activityKey]: { ...act, total: newTotal } 
-          } 
-        }),
+      await updateRoom(roomId, {
+        activities: { 
+          ...currentRoom.activities, 
+          [activityKey]: { ...act, total: newTotal } 
+        } 
       });
-      if (!res.ok) throw new Error('Update failed');
       loadRooms();
     } catch (err: any) {
       alert(err.message);
@@ -720,12 +717,7 @@ export default function App() {
 
   const handleUpdateRoomMeta = async (roomId: string, fields: Partial<RoomRecord>) => {
     try {
-      const res = await fetch(`/api/rooms/${roomId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fields)
-      });
-      if (!res.ok) throw new Error('更新失敗');
+      await updateRoom(roomId, fields);
       loadRooms();
     } catch (err: any) {
       alert(err.message);
@@ -911,10 +903,17 @@ export default function App() {
             </button>
           </form>
           
-          <div className="mt-8 text-xs text-slate-400 text-center bg-slate-50 p-4 rounded-xl border border-slate-100">
-            <p className="font-bold mb-1">測試帳號參考：</p>
-            <p>櫃檯: 1111 | 中式: 2222 | 西式: 3333 </p>
-            <p>活動組: 4444 | 咖啡廳: 5555 | 主管巡檢: 6666</p>
+          <div className="mt-8 text-xs text-slate-400 text-center bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-2">
+            <div>
+              <p className="font-bold mb-1">測試帳號參考：</p>
+              <p>櫃檯: 1111 | 中式: 2222 | 西式: 3333 </p>
+              <p>活動組: 4444 | 咖啡廳: 5555 | 主管巡檢: 6666</p>
+            </div>
+            {getOfflineModeStatus() && (
+              <div className="text-[11px] text-amber-700 font-bold bg-amber-50 p-2 rounded-lg border border-amber-200">
+                ⚡️ 偵測到靜態網頁平台 (Vercel)，已開啟高可靠 LocalStorage 機制，密碼與核銷功能皆可完美離線運作！
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -971,7 +970,14 @@ export default function App() {
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#8B5E3C] text-xl font-bold text-white shadow-sm">雪</div>
             <div>
               <h1 className="text-lg md:text-xl font-bold tracking-tight">雪霸農場 | 雲端活動報到管理系統</h1>
-              <p className="text-xs text-white/70 mt-0.5">當前管理者：{user.name}</p>
+              <p className="text-xs text-white/70 mt-0.5 flex flex-wrap items-center gap-2">
+                <span>當前管理者：{user.name}</span>
+                {getOfflineModeStatus() && (
+                  <span className="bg-amber-500/25 text-amber-200 border border-amber-500/30 text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-md">
+                    ⚡️ 離線儲存版 (LocalStorage)
+                  </span>
+                )}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-6">
