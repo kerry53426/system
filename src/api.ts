@@ -19,6 +19,7 @@ export interface RoomRecord {
   groupType?: 'none' | 'lion' | 'yirong' | 'general_group';
   tourLeaderName?: string;
   tourLeaderPhone?: string;
+  roomRole?: 'guest' | 'driver' | 'tour_leader';
   isSaturday?: boolean;
   vegetarianCount?: number;
   notes?: string;
@@ -28,6 +29,7 @@ export interface RoomRecord {
     chineseLunchSecondDay: ActivityCounts;
     chineseDinner: ActivityCounts;
     westernLunch: ActivityCounts;
+    westernLunchSecondDay?: ActivityCounts;
     westernDinner: ActivityCounts;
     seasonalActivity: ActivityCounts;
     jamDiy: ActivityCounts;
@@ -50,6 +52,7 @@ export const ACTIVITY_DICT: Record<string, string> = {
   chineseLunchSecondDay: '第二天中式午餐(CL2)',
   chineseDinner: '中式晚餐(CD)',
   westernLunch: '西式午餐(WL)',
+  westernLunchSecondDay: '第二天西式午餐(WL2)',
   westernDinner: '西式晚餐(WD)',
   seasonalActivity: '當季活動卷(D)',
   jamDiy: '果醬DIY(J)',

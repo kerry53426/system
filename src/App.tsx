@@ -152,20 +152,14 @@ const getRoomDailyDistribution = (room: RoomRecord): Record<string, Record<strin
       }
     }
 
-    if (key === 'chineseBreakfast') {
-      const breakfastDays = days.slice(1);
-      const n = breakfastDays.length;
+    if (key === 'chineseBreakfast' || key === 'chineseLunchSecondDay' || key === 'westernLunchSecondDay') {
+      const targetDays = days.slice(1);
+      const n = targetDays.length;
       if (n > 0) {
         const dist = distribute(total, n);
-        breakfastDays.forEach((d, idx) => {
+        targetDays.forEach((d, idx) => {
           distribution[d][key] = (distribution[d][key] || 0) + dist[idx];
         });
-      } else {
-        distribution[days[0]][key] = total;
-      }
-    } else if (key === 'chineseLunchSecondDay') {
-      if (days.length > 1) {
-        distribution[days[1]][key] = total;
       } else {
         distribution[days[0]][key] = total;
       }
@@ -328,7 +322,7 @@ export default function App() {
       name: '西餐部 🍽️',
       color: 'bg-indigo-50 text-indigo-800 border-indigo-100',
       progressColor: 'bg-indigo-600',
-      keys: ['westernLunch', 'westernDinner'],
+      keys: ['westernLunch', 'westernLunchSecondDay', 'westernDinner'],
     },
     {
       id: 'activity',
@@ -549,6 +543,12 @@ export default function App() {
       const stayDates = getStayDaysList(room.checkInDate, nights);
       if (!stayDates.includes(selectedDate)) return;
 
+      const isStaffRoom = room.roomRole === 'driver' || room.roomRole === 'tour_leader';
+
+      if (isStaffRoom) {
+        return; // 不要把司機跟領隊算進去中式餐廳人數彙整報告裡
+      }
+
       const dailyStates = getRoomDailyActivitiesList(room);
       
       const bState = dailyStates.find(ds => ds.date === selectedDate && ds.activityKey === 'chineseBreakfast');
@@ -646,7 +646,7 @@ export default function App() {
   const [peopleCount, setPeopleCount] = useState(2);
   const [vegetarianCount, setVegetarianCount] = useState<number>(0);
   const [notes, setNotes] = useState<string>('');
-  const [projectType, setProjectType] = useState<'custom' | 'one_night' | 'premium' | 'longstay' | 'lion' | 'yirong' | 'general_group'>('one_night');
+  const [projectType, setProjectType] = useState<'custom' | 'one_night' | 'premium' | 'longstay' | 'senior' | 'farm_voucher' | 'lion' | 'yirong' | 'general_group'>('one_night');
   const [stayNights, setStayNights] = useState<number>(1);
   const [isSaturday, setIsSaturday] = useState(false);
   const [tourLeaderName, setTourLeaderName] = useState('');
@@ -656,7 +656,7 @@ export default function App() {
     return (new Date(Date.now() - tzoffset)).toISOString().slice(0, 10);
   });
   
-  const [groupRooms, setGroupRooms] = useState([{ id: Date.now(), roomNo: '', peopleCount: 2 }]);
+  const [groupRooms, setGroupRooms] = useState<{id: number, roomNo: string, peopleCount: number, roomRole: 'guest' | 'driver' | 'tour_leader'}[]>([{ id: Date.now(), roomNo: '', peopleCount: 2, roomRole: 'guest' }]);
   const isGroupMode = ['lion', 'yirong', 'general_group'].includes(projectType);
 
   const [newActivities, setNewActivities] = useState<Record<string, number>>({
@@ -665,6 +665,7 @@ export default function App() {
     chineseLunchSecondDay: 0,
     chineseDinner: 0,
     westernLunch: 0,
+    westernLunchSecondDay: 0,
     westernDinner: 0,
     seasonalActivity: 0,
     jamDiy: 0,
@@ -676,12 +677,14 @@ export default function App() {
   useEffect(() => {
     if (projectType === 'custom' || ['lion', 'yirong', 'general_group'].includes(projectType)) return;
 
+    const basePeopleCount = groupRooms[0]?.peopleCount || 2;
     const updated = {
-      chineseBreakfast: peopleCount * stayNights, // All rooms get Chinese Breakfast!
+      chineseBreakfast: basePeopleCount * stayNights, // All rooms get Chinese Breakfast!
       chineseLunch: 0,
       chineseLunchSecondDay: 0,
       chineseDinner: 0,
       westernLunch: 0,
+      westernLunchSecondDay: 0,
       westernDinner: 0,
       seasonalActivity: 0,
       jamDiy: 0,
@@ -690,18 +693,25 @@ export default function App() {
     };
 
     if (projectType === 'one_night') {
-      updated.seasonalActivity = peopleCount * stayNights;
-      updated.chineseDinner = peopleCount * stayNights;
+      updated.seasonalActivity = basePeopleCount * stayNights;
+      updated.chineseDinner = basePeopleCount * stayNights;
     } else if (projectType === 'premium') {
-      updated.westernLunch = peopleCount * stayNights;
-      updated.westernDinner = peopleCount * stayNights;
-      updated.afternoonTea = peopleCount * stayNights;
-      updated.vinegarDiy = peopleCount * stayNights;
+      updated.westernLunch = basePeopleCount * stayNights;
+      updated.westernDinner = basePeopleCount * stayNights;
+      updated.afternoonTea = basePeopleCount * stayNights;
+      updated.vinegarDiy = basePeopleCount * stayNights;
     } else if (projectType === 'longstay') {
-      updated.chineseDinner = peopleCount * stayNights;
+      updated.chineseDinner = basePeopleCount * stayNights;
+    } else if (projectType === 'senior') {
+      updated.chineseDinner = basePeopleCount * stayNights;
+    } else if (projectType === 'farm_voucher') {
+      updated.westernLunch = basePeopleCount * stayNights;
+      updated.chineseDinner = basePeopleCount * stayNights;
+      updated.seasonalActivity = basePeopleCount * stayNights;
+      updated.afternoonTea = basePeopleCount * stayNights;
     }
     setNewActivities(updated);
-  }, [projectType, peopleCount, isSaturday, stayNights]);
+  }, [projectType, groupRooms, isSaturday, stayNights]);
 
   const calculateActivitiesForProject = (type: string, count: number, isSat: boolean, nights: number = 1) => {
     const acts = {
@@ -710,6 +720,7 @@ export default function App() {
       chineseLunchSecondDay: 0,
       chineseDinner: 0,
       westernLunch: 0,
+      westernLunchSecondDay: 0,
       westernDinner: 0,
       seasonalActivity: 0,
       jamDiy: 0,
@@ -727,6 +738,13 @@ export default function App() {
       acts.vinegarDiy = count * nights;
     } else if (type === 'longstay') {
       acts.chineseDinner = count * nights;
+    } else if (type === 'senior') {
+      acts.chineseDinner = count * nights;
+    } else if (type === 'farm_voucher') {
+      acts.westernLunch = count * nights;
+      acts.chineseDinner = count * nights;
+      acts.seasonalActivity = count * nights;
+      acts.afternoonTea = count * nights;
     } else if (type === 'lion') {
       acts.chineseLunch = count * nights;
       acts.westernDinner = count * nights;
@@ -792,12 +810,15 @@ export default function App() {
     setUser(null);
   };
 
+  const [showActivityEditor, setShowActivityEditor] = useState(false);
+
   const handleTriggerAddRoom = () => {
     const nextIsAdding = !isAdding;
     setIsAdding(nextIsAdding);
     if (nextIsAdding) {
       setProjectType('one_night');
       setStayNights(1);
+      setShowActivityEditor(false);
       setPeopleCount(2);
       setNewRoomNo('');
       setNewGuestName('');
@@ -876,67 +897,51 @@ export default function App() {
   const handleAddRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (isGroupMode) {
-        if (!newGuestName.trim()) { alert("請輸入團體名稱"); return; }
-        if (groupRooms.some(r => !r.roomNo.trim())) { alert("請填寫所有房號"); return; }
- 
-        // 驗證是否有重複房號 (團體本身是否有重複，或是否有重複已存在於資料庫)
-        const allNewGroupRoomNos = groupRooms.map(r => r.roomNo.trim());
-        const hasSelfDuplicate = new Set(allNewGroupRoomNos).size !== allNewGroupRoomNos.length;
-        if (hasSelfDuplicate) {
-          alert("⚠️ 錯誤：名單中填寫的房號有重複，請仔細檢查！");
-          return;
-        }
+      if (!newGuestName.trim()) { alert("請輸入代表人/團體名稱"); return; }
+      if (groupRooms.some(r => !r.roomNo.trim())) { alert("請填寫所有房號"); return; }
 
-        for (const r of groupRooms) {
-          const matched = rooms.find(ex => ex.roomNumber === r.roomNo.trim());
-          if (matched) {
-            alert(`⚠️ 房號 [${r.roomNo.trim()}] 重複！該房目前已登記給 [${matched.guestName || '其他客人'}]。請確認房號是否正確或是否已有人入住。`);
-            return;
-          }
-        }
+      // 驗證是否有重複房號 (自行填寫的清單是否有重複)
+      const allNewGroupRoomNos = groupRooms.map(r => r.roomNo.trim());
+      const hasSelfDuplicate = new Set(allNewGroupRoomNos).size !== allNewGroupRoomNos.length;
+      if (hasSelfDuplicate) {
+        alert("⚠️ 錯誤：名單中填寫的房號有重複，請仔細檢查！");
+        return;
+      }
 
-        const nameWithSuffix = newGuestName.replace(/\s*\(\d+天\d+夜\)/g, '') + getDurationSuffix(stayNights);
- 
-        for (let i = 0; i < groupRooms.length; i++) {
-          const room = groupRooms[i];
-          const formattedActivities = calculateActivitiesForProject(projectType, room.peopleCount, isSaturday, stayNights);
-          await addRoom({ 
-            roomNumber: room.roomNo, 
-            guestName: nameWithSuffix, 
-            checkInDate: checkInDate,
-            groupType: projectType,
-            tourLeaderName: projectType === 'general_group' ? tourLeaderName : undefined,
-            tourLeaderPhone: projectType === 'general_group' ? tourLeaderPhone : undefined,
-            isSaturday: projectType === 'lion' ? isSaturday : undefined,
-            vegetarianCount: i === 0 ? vegetarianCount : 0,
-            notes: i === 0 ? notes : "",
-            activities: formattedActivities 
-          });
-        }
-      } else {
-        if (!newRoomNo.trim() || !newGuestName.trim()) { alert("請輸入房號及代表姓名"); return; }
-        
-        // 驗證是否重疊房號
-        const matched = rooms.find(ex => ex.roomNumber === newRoomNo.trim());
+      // 驗證是否與資料庫重疊
+      for (const r of groupRooms) {
+        const matched = rooms.find(ex => ex.roomNumber === r.roomNo.trim());
         if (matched) {
-          alert(`⚠️ 房號 [${newRoomNo.trim()}] 重複！該房目前已登記給 [${matched.guestName || '其他客人'}]。請確認房號是否正確或是否已有人入住。`);
+          alert(`⚠️ 房號 [${r.roomNo.trim()}] 重複！該房目前已登記給 [${matched.guestName || '其他客人'}]。請確認房號是否正確或是否已有人入住。`);
           return;
         }
+      }
 
-        const nameWithSuffix = newGuestName.replace(/\s*\(\d+天\d+夜\)/g, '') + getDurationSuffix(stayNights);
-        const formattedActivities: any = {};
-        Object.keys(newActivities).forEach(k => {
-          formattedActivities[k] = { total: newActivities[k], consumed: 0 };
-        });
- 
+      const nameWithSuffix = newGuestName.replace(/\s*\(\d+天\d+夜\)/g, '') + getDurationSuffix(stayNights);
+
+      for (let i = 0; i < groupRooms.length; i++) {
+        const room = groupRooms[i];
+        let formattedActivities: any = {};
+
+        if (projectType === 'custom') {
+          Object.keys(newActivities).forEach(k => {
+            formattedActivities[k] = { total: newActivities[k], consumed: 0 };
+          });
+        } else {
+          formattedActivities = calculateActivitiesForProject(projectType, room.peopleCount, isSaturday, stayNights);
+        }
+
         await addRoom({ 
-          roomNumber: newRoomNo, 
+          roomNumber: room.roomNo, 
           guestName: nameWithSuffix, 
           checkInDate: checkInDate,
-          groupType: 'none',
-          vegetarianCount: vegetarianCount,
-          notes: notes,
+          groupType: isGroupMode ? projectType : 'none',
+          tourLeaderName: projectType === 'general_group' ? tourLeaderName : undefined,
+          tourLeaderPhone: projectType === 'general_group' ? tourLeaderPhone : undefined,
+          roomRole: room.roomRole,
+          isSaturday: projectType === 'lion' ? isSaturday : undefined,
+          vegetarianCount: i === 0 ? vegetarianCount : 0, // 僅在主房或帶頭房間紀錄總素食人數
+          notes: i === 0 ? notes : "",
           activities: formattedActivities 
         });
       }
@@ -944,7 +949,7 @@ export default function App() {
       setIsAdding(false);
       setNewRoomNo('');
       setNewGuestName('');
-      setGroupRooms([{ id: Date.now(), roomNo: '', peopleCount: 2 }]);
+      setGroupRooms([{ id: Date.now(), roomNo: '', peopleCount: 2, roomRole: 'guest' }]);
       setPeopleCount(2);
       setVegetarianCount(0);
       setNotes('');
@@ -1020,6 +1025,69 @@ export default function App() {
     setGroupRooms(groupRooms.map(r => r.id === id ? { ...r, [field]: value } : r));
   };
 
+  // 計算專屬面板（當天與隔一天、個人與團體的核銷總人數）
+  const roleDashboardStats = React.useMemo(() => {
+    if (!user || user.role === 'manager') return null;
+
+    const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+    const todayStr = new Date(Date.now() - tzoffset).toISOString().slice(0, 10);
+    const tmr = new Date(Date.now() - tzoffset + 86400000);
+    const tmrStr = tmr.toISOString().slice(0, 10);
+    
+    const dates = [
+      { key: 'today', dateStr: todayStr, label: '今日' },
+      { key: 'tomorrow', dateStr: tmrStr, label: '明日' }
+    ];
+
+    const stats = dates.reduce((acc, obj) => {
+      acc[obj.key] = { 
+        label: obj.label, 
+        dateStr: obj.dateStr, 
+        total: 0, 
+        individual: { total: 0, breakdown: {} as Record<string, number> }, 
+        groups: {} as Record<string, { total: number; breakdown: Record<string, number> }> 
+      };
+      return acc;
+    }, {} as Record<string, any>);
+
+    const allowedActivities = ROLE_ACTIVITIES[user.role] || [];
+
+    rooms.forEach(room => {
+      const isGroup = room.groupType && room.groupType !== 'none';
+      const actualGroupType = isGroup ? room.groupType : null;
+      const dailyStates = getRoomDailyActivitiesList(room);
+      
+      dates.forEach(d => {
+        const matchingStates = dailyStates.filter(ds => 
+          ds.date === d.dateStr && allowedActivities.includes(ds.activityKey) && ds.total > 0
+        );
+        const dailyTotal = matchingStates.reduce((sum, ds) => sum + ds.total, 0);
+        
+        if (dailyTotal > 0) {
+          stats[d.key].total += dailyTotal;
+          if (isGroup && actualGroupType) {
+            if (!stats[d.key].groups[actualGroupType]) {
+              stats[d.key].groups[actualGroupType] = { total: 0, breakdown: {} };
+            }
+            stats[d.key].groups[actualGroupType].total += dailyTotal;
+            matchingStates.forEach(ds => {
+              stats[d.key].groups[actualGroupType].breakdown[ds.activityKey] = 
+                (stats[d.key].groups[actualGroupType].breakdown[ds.activityKey] || 0) + ds.total;
+            });
+          } else {
+            stats[d.key].individual.total += dailyTotal;
+            matchingStates.forEach(ds => {
+              stats[d.key].individual.breakdown[ds.activityKey] = 
+                (stats[d.key].individual.breakdown[ds.activityKey] || 0) + ds.total;
+            });
+          }
+        }
+      });
+    });
+
+    return stats;
+  }, [rooms, user]);
+
   if (!user) {
     return (
       <div className="min-h-screen bg-[#F9F7F2] flex items-center justify-center p-4 font-sans">
@@ -1074,14 +1142,39 @@ export default function App() {
   // 1. Filtered Rooms by Search Query (Room Number, Guest Name, Tour Leader)
   const filteredRooms = rooms.filter(room => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return true;
-    return (
+    
+    const matchesSearch = query ? (
       room.roomNumber.toLowerCase().includes(query) ||
       room.guestName.toLowerCase().includes(query) ||
       (room.tourLeaderName && room.tourLeaderName.toLowerCase().includes(query)) ||
       (room.tourLeaderPhone && room.tourLeaderPhone.includes(query)) ||
       (room.checkInDate && room.checkInDate.includes(query))
-    );
+    ) : true;
+
+    if (!matchesSearch) return false;
+
+    // Filter logic for non-manager roles
+    if (user.role !== 'manager') {
+      const dailyStates = getRoomDailyActivitiesList(room);
+      const relevantActivities = dailyStates.filter(ds => 
+        ds.date === selectedDate && 
+        allowedActivities.includes(ds.activityKey) &&
+        ds.total > 0
+      );
+
+      // "只要顯示有那個活動的房間就好" -> Must have at least one valid activity
+      if (relevantActivities.length === 0 && !query) {
+        return false;
+      }
+
+      // "房間 活動全部都做完核銷的 就可以自動不要顯示了"
+      const hasPending = relevantActivities.some(ds => ds.consumed < ds.total);
+      if (!hasPending && !query) {
+        return false; // Hide if fully consumed, unless explicitly searched
+      }
+    }
+
+    return true;
   });
 
   // 2. Separate Individual (散客) and Group (團體) rooms
@@ -1185,6 +1278,8 @@ export default function App() {
                         <option value="one_night">一泊二食 (含活動卷D)</option>
                         <option value="premium">尊爵專案 (含西午西晚TW)</option>
                         <option value="longstay">Longstay 五天四夜專案 🌸</option>
+                        <option value="senior">樂齡專案 (中晚+明早)</option>
+                        <option value="farm_voucher">農場卷專案 (西午中晚+TD+明早)</option>
                         <option value="custom">自訂 / 單獨購買</option>
                         <option value="lion">雄獅專案 (團體)</option>
                         <option value="yirong">怡容專案 (團體)</option>
@@ -1220,52 +1315,18 @@ export default function App() {
                       </select>
                     </div>
 
-                    {!isGroupMode ? (
-                      <>
-                        <div className="w-full sm:w-1/6">
-                          <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">房號</label>
-                          <input 
-                            required 
-                            value={newRoomNo} 
-                            onChange={e => setNewRoomNo(e.target.value)} 
-                            className="w-full px-4 py-2.5 bg-white border border-[#E5E1D8] rounded-xl focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all shadow-sm text-sm font-semibold" 
-                            placeholder="例: 101" 
-                          />
-                        </div>
-                        <div className="w-full sm:w-1/5">
-                          <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">代表姓名</label>
-                          <input 
-                            required 
-                            value={newGuestName} 
-                            onChange={e => setNewGuestName(e.target.value)} 
-                            className="w-full px-4 py-2.5 bg-white border border-[#E5E1D8] rounded-xl focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all shadow-sm text-sm font-semibold" 
-                            placeholder="例: 王大明" 
-                          />
-                        </div>
-                        <div className="w-full sm:w-[90px]">
-                          <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide text-center">人數</label>
-                          <input 
-                            type="number"
-                            min="1"
-                            required 
-                            value={peopleCount} 
-                            onChange={e => setPeopleCount(parseInt(e.target.value) || 1)} 
-                            className="w-full px-4 py-2.5 bg-white border border-[#E5E1D8] rounded-xl focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all shadow-sm text-center text-sm font-bold" 
-                          />
-                        </div>
-                      </>
-                    ) : (
-                      <div className="w-full sm:w-2/5 flex-1">
-                        <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">團體訂房名稱</label>
-                        <input 
-                          required 
-                          value={newGuestName} 
-                          onChange={e => setNewGuestName(e.target.value)} 
-                          className="w-full px-4 py-2.5 bg-white border border-[#E5E1D8] rounded-xl focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all shadow-sm text-sm font-bold" 
-                          placeholder="例: 怡容台北3日團" 
-                        />
-                      </div>
-                    )}
+                    <div className="w-full sm:w-2/5 flex-1">
+                      <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wide">
+                        {isGroupMode ? "團體訂房名稱" : "訂房代表人 / 客戶名稱"}
+                      </label>
+                      <input 
+                        required 
+                        value={newGuestName} 
+                        onChange={e => setNewGuestName(e.target.value)} 
+                        className="w-full px-4 py-2.5 bg-white border border-[#E5E1D8] rounded-xl focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all shadow-sm text-sm font-bold" 
+                        placeholder={isGroupMode ? "例: 怡容台北3日團" : "例: 王大明"} 
+                      />
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-5 bg-white p-4 rounded-xl border border-[#E5E1D8] shadow-sm">
@@ -1341,94 +1402,116 @@ export default function App() {
                   )}
 
                   {/* Group Rooms Allocation Editor */}
-                  {isGroupMode && (
-                    <div className="mb-6">
-                      <label className="block text-xs font-bold text-slate-500 mb-3 uppercase tracking-wide">分配房間與每房人數</label>
-                      <div className="bg-white border border-[#E5E1D8] rounded-xl p-4 shadow-sm space-y-3">
-                        {/* Header guides */}
-                        <div className="hidden sm:flex gap-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-1 pb-1 border-b border-slate-100">
-                          <div className="w-48 shrink-0">房號</div>
-                          <div className="flex-1">每房入住人數 (套用活動核銷額度)</div>
-                          <div className="w-8 shrink-0"></div>
-                        </div>
-
-                        {groupRooms.map((r) => (
-                          <div key={r.id} className="flex gap-4 items-center">
-                            <div className="w-48 shrink-0">
-                              <input 
-                                required
-                                value={r.roomNo} 
-                                onChange={e => updateGroupRoom(r.id, 'roomNo', e.target.value)} 
-                                className="w-full px-3 py-2 bg-slate-50 border border-[#E5E1D8] rounded-lg focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all text-sm font-semibold" 
-                                placeholder="例: 101" 
-                              />
-                            </div>
-                            <div className="flex-1">
-                              <input 
-                                type="number" 
-                                min="1" 
-                                required
-                                value={r.peopleCount} 
-                                onChange={e => updateGroupRoom(r.id, 'peopleCount', parseInt(e.target.value) || 1)} 
-                                className="w-28 px-3 py-2 bg-slate-50 border border-[#E5E1D8] rounded-lg focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all text-sm text-center font-bold text-slate-700" 
-                                placeholder="人數"
-                              />
-                            </div>
-                            <button 
-                              type="button"
-                              onClick={() => removeGroupRoomRow(r.id)} 
-                              disabled={groupRooms.length === 1}
-                              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        ))}
-                        <button 
-                          type="button"
-                          onClick={addGroupRoomRow}
-                          className="mt-3 flex items-center justify-center w-full py-2 border-2 border-dashed border-[#E5E1D8] text-[#3A5A40] font-bold text-sm rounded-lg hover:bg-[#3A5A40]/5 transition-colors"
-                        >
-                          加入一間房
-                        </button>
+                  <div className="mb-6">
+                    <label className="block text-xs font-bold text-slate-500 mb-3 uppercase tracking-wide">分配房間與每房人數 (批次新增)</label>
+                    <div className="bg-white border border-[#E5E1D8] rounded-xl p-4 shadow-sm space-y-3">
+                      {/* Header guides */}
+                      <div className="hidden sm:flex gap-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider px-1 pb-1 border-b border-slate-100">
+                        <div className="w-48 shrink-0">房號</div>
+                        <div className="w-28 shrink-0">每房人數</div>
+                        <div className="flex-1">角色屬性</div>
+                        <div className="w-8 shrink-0"></div>
                       </div>
+
+                      {groupRooms.map((r) => (
+                        <div key={r.id} className="flex gap-4 items-center">
+                          <div className="w-48 shrink-0">
+                            <input 
+                              required
+                              value={r.roomNo} 
+                              onChange={e => updateGroupRoom(r.id, 'roomNo', e.target.value)} 
+                              className="w-full px-3 py-2 bg-slate-50 border border-[#E5E1D8] rounded-lg focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all text-sm font-semibold" 
+                              placeholder="例: 101" 
+                            />
+                          </div>
+                          <div className="w-28 shrink-0">
+                            <input 
+                              type="number" 
+                              min="1" 
+                              required
+                              value={r.peopleCount} 
+                              onChange={e => updateGroupRoom(r.id, 'peopleCount', parseInt(e.target.value) || 1)} 
+                              className="w-full px-3 py-2 bg-slate-50 border border-[#E5E1D8] rounded-lg focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all text-sm text-center font-bold text-slate-700" 
+                              placeholder="人數"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <select
+                               value={r.roomRole}
+                               onChange={e => updateGroupRoom(r.id, 'roomRole', e.target.value)}
+                               className="w-full px-3 py-2 bg-slate-50 border border-[#E5E1D8] rounded-lg focus:ring-2 focus:ring-[#3A5A40]/20 focus:border-[#3A5A40] outline-none transition-all text-sm font-semibold"
+                             >
+                               <option value="guest">客房</option>
+                               <option value="driver">司機房</option>
+                               <option value="tour_leader">領隊房</option>
+                             </select>
+                          </div>
+                          <button 
+                            type="button"
+                            onClick={() => removeGroupRoomRow(r.id)} 
+                            disabled={groupRooms.length === 1}
+                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                      <button 
+                        type="button"
+                        onClick={addGroupRoomRow}
+                        className="mt-3 flex items-center justify-center w-full py-2 border-2 border-dashed border-[#E5E1D8] text-[#3A5A40] font-bold text-sm rounded-lg hover:bg-[#3A5A40]/5 transition-colors"
+                      >
+                        加入一間房
+                      </button>
                     </div>
-                  )}
+                  </div>
 
                   {/* Manual activities adjustment for non-groups only */}
                   {!isGroupMode && (
                     <div className="mb-5 bg-white border border-[#E5E1D8] p-4 rounded-xl shadow-xs">
-                      <label className="block text-xs font-bold text-[#3A5A40] mb-3 uppercase tracking-wide">💡 專案活動票卷原始總額設定 (自訂調整會自動設為自訂專案型態)</label>
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5">
-                        {Object.keys(ACTIVITY_DICT).map(key => (
-                          <div key={key} className="flex flex-col items-center bg-slate-50 border border-slate-100 p-2.5 rounded-xl text-center transition-all hover:border-[#3A5A40]/30 shadow-3xs">
-                            <span className="text-[11px] font-extrabold text-[#1B3022] truncate max-w-full mb-2">{ACTIVITY_DICT[key]}</span>
-                            <div className="flex items-center border border-[#E5E1D8] bg-white rounded-lg overflow-hidden shrink-0 mt-auto">
-                              <button 
-                                type="button" 
-                                onClick={() => {
-                                  setProjectType('custom');
-                                  setNewActivities(prev => ({ ...prev, [key]: Math.max(0, (prev[key] || 0) - 1) }));
-                                }} 
-                                className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-500 font-extrabold text-xs border-r border-[#E5E1D8] transition-colors"
-                              >
-                                -
-                              </button>
-                              <span className="text-xs font-mono font-black w-7 text-center text-slate-800">{newActivities[key] || 0}</span>
-                              <button 
-                                type="button" 
-                                onClick={() => {
-                                  setProjectType('custom');
-                                  setNewActivities(prev => ({ ...prev, [key]: (prev[key] || 0) + 1 }));
-                                }} 
-                                className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-500 font-extrabold text-xs border-l border-[#E5E1D8] transition-colors"
-                              >
-                                +
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="block text-xs font-bold text-[#3A5A40] uppercase tracking-wide">💡 專案活動票卷原始總額設定 (展開以自訂)</label>
+                        <button 
+                          type="button" 
+                          onClick={() => setShowActivityEditor(!showActivityEditor)}
+                          className="px-3 py-1.5 text-xs text-slate-500 font-bold hover:bg-slate-100 rounded-lg transition-colors border border-slate-200"
+                        >
+                          {showActivityEditor ? '隱藏票卷調整' : '展開票卷調整'}
+                        </button>
                       </div>
+                      
+                      {showActivityEditor && (
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5">
+                          {Object.keys(ACTIVITY_DICT).map(key => (
+                            <div key={key} className="flex flex-col items-center bg-slate-50 border border-slate-100 p-2.5 rounded-xl text-center transition-all hover:border-[#3A5A40]/30 shadow-3xs">
+                              <span className="text-[11px] font-extrabold text-[#1B3022] truncate max-w-full mb-2">{ACTIVITY_DICT[key]}</span>
+                              <div className="flex items-center border border-[#E5E1D8] bg-white rounded-lg overflow-hidden shrink-0 mt-auto">
+                                <button 
+                                  type="button" 
+                                  onClick={() => {
+                                    setProjectType('custom');
+                                    setNewActivities(prev => ({ ...prev, [key]: Math.max(0, (prev[key] || 0) - 1) }));
+                                  }} 
+                                  className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-500 font-extrabold text-xs border-r border-[#E5E1D8] transition-colors"
+                                >
+                                  -
+                                </button>
+                                <span className="text-xs font-mono font-black w-7 text-center text-slate-800">{newActivities[key] || 0}</span>
+                                <button 
+                                  type="button" 
+                                  onClick={() => {
+                                    setProjectType('custom');
+                                    setNewActivities(prev => ({ ...prev, [key]: (prev[key] || 0) + 1 }));
+                                  }} 
+                                  className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-500 font-extrabold text-xs border-l border-[#E5E1D8] transition-colors"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1464,8 +1547,8 @@ export default function App() {
               </div>
 
               {/* Quick switcher & Collapse trigger inside report (for chefs convenience) */}
-              <div className="flex flex-wrap items-center gap-2 self-end md:self-auto shrink-0">
-                <div className="flex items-center gap-1.5 bg-white border border-[#E5E1D8] p-1 rounded-xl shadow-3xs">
+              <div className="flex flex-wrap items-center gap-2 self-end md:self-auto shrink-0 mt-3 md:mt-0">
+                <div className="flex flex-wrap items-center gap-1.5 bg-white border border-[#E5E1D8] p-1.5 rounded-xl shadow-3xs">
                   <button
                     type="button"
                     onClick={() => {
@@ -1473,20 +1556,37 @@ export default function App() {
                       d.setDate(d.getDate() - 1);
                       setSelectedDate(d.toLocaleDateString('sv'));
                     }}
-                    className="px-2.5 py-1.5 hover:bg-slate-50 text-slate-600 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                    className="px-2 py-1.5 hover:bg-slate-50 text-slate-400 font-bold rounded-lg transition-colors cursor-pointer"
                   >
-                    ◀ 前一日
+                    ◀
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const tzoffset = (new Date()).getTimezoneOffset() * 60000;
-                      setSelectedDate(new Date(Date.now() - tzoffset).toISOString().slice(0, 10));
-                    }}
-                    className="px-3 py-1.5 bg-[#3A5A40] hover:bg-[#1B3022] text-white text-xs font-black rounded-lg transition-colors cursor-pointer"
-                  >
-                    今天
-                  </button>
+                  
+                  {/* Generated tabs for D, D+1, D+2, D+3 */}
+                  {[0, 1, 2, 3].map(offset => {
+                    const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+                    const todayDate = new Date(Date.now() - tzoffset);
+                    const targetDate = new Date(todayDate);
+                    targetDate.setDate(targetDate.getDate() + offset);
+                    const targetDateStr = targetDate.toISOString().slice(0, 10);
+                    
+                    const labels = ['今天', '明天', '後天', '大後天'];
+                    
+                    return (
+                      <button
+                        key={offset}
+                        type="button"
+                        onClick={() => setSelectedDate(targetDateStr)}
+                        className={`px-3 py-1.5 text-xs font-black rounded-lg transition-colors cursor-pointer ${
+                          selectedDate === targetDateStr 
+                            ? 'bg-[#3A5A40] text-white shadow-sm' 
+                            : 'hover:bg-slate-50 text-slate-600'
+                        }`}
+                      >
+                        {labels[offset]}
+                      </button>
+                    );
+                  })}
+
                   <button
                     type="button"
                     onClick={() => {
@@ -1494,9 +1594,9 @@ export default function App() {
                       d.setDate(d.getDate() + 1);
                       setSelectedDate(d.toLocaleDateString('sv'));
                     }}
-                    className="px-2.5 py-1.5 hover:bg-slate-50 text-slate-600 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                    className="px-2 py-1.5 hover:bg-slate-50 text-slate-400 font-bold rounded-lg transition-colors cursor-pointer"
                   >
-                    後一日 ▶
+                    ▶
                   </button>
                 </div>
 
@@ -1730,6 +1830,79 @@ export default function App() {
         )}
             </div>
           )}
+
+        {/* Role Dashboard Summary Panels (Only for non-managers) */}
+        {roleDashboardStats && (
+          <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in">
+            {['today', 'tomorrow'].map(key => {
+              const data = roleDashboardStats[key];
+              if (!data) return null;
+              return (
+                <div key={key} className="bg-white border border-[#E5E1D8] shadow-sm rounded-xl p-5 relative overflow-hidden transition-all hover:shadow-md">
+                  <div className={`absolute top-0 right-0 w-2 h-full ${key === 'today' ? 'bg-[#3A5A40]' : 'bg-[#8B5E3C]'}`} />
+                  <div className="flex justify-between items-center mb-4">
+                    <div className="flex items-center gap-2">
+                       <span className={`text-xl font-black ${key === 'today' ? 'text-[#3A5A40]' : 'text-[#8B5E3C]'}`}>{data.label}</span>
+                      <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{data.dateStr}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block leading-tight">預計服務總票券數</span>
+                      <span className="text-2xl font-black text-slate-800 leading-none">{data.total} <span className="text-sm font-bold text-slate-500">票</span></span>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {data.individual.total > 0 && (
+                      <div className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                        <div className="text-[11px] font-bold text-slate-500 mb-2 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-slate-700">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                            散客 / 自訂名單
+                          </span>
+                          <span className="text-[10px] font-extrabold text-slate-500 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-3xs">小計 {data.individual.total} 票</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(data.individual.breakdown)
+                            .sort((a, b) => (b[1] as number) - (a[1] as number))
+                            .map(([actKey, count]) => (
+                            <div key={actKey} className="flex px-2 py-1 items-center gap-1.5 bg-white border border-slate-200 rounded shadow-3xs text-[11px]">
+                              <span className="font-extrabold text-[#1B3022]">{ACTIVITY_DICT[actKey] || actKey}</span>
+                              <span className="font-mono font-black text-slate-600">{String(count)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {Object.entries(data.groups).map(([groupType, groupData]) => {
+                      const typedData = groupData as { total: number, breakdown: Record<string, number> };
+                      return (
+                        <div key={groupType} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                          <div className="text-[11px] font-bold text-slate-500 mb-2 flex items-center justify-between">
+                            <span className={`inline-flex items-center text-[10px] px-2 py-0.5 rounded text-white font-extrabold shadow-sm ${groupType === 'lion' ? 'bg-[#8B5E3C]' : groupType === 'yirong' ? 'bg-[#D4A373]' : 'bg-[#3A5A40]'}`}>
+                              {groupType === 'lion' ? '雄獅專案 🦁' : groupType === 'yirong' ? '怡容專案 🌸' : '團體專案 👥'}
+                            </span>
+                            <span className="text-[10px] font-extrabold text-[#3A5A40] bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded shadow-3xs">小計 {typedData.total} 票</span>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {Object.entries(typedData.breakdown)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([actKey, count]) => (
+                              <div key={actKey} className="flex px-2 py-1 items-center gap-1.5 bg-white border border-emerald-100 rounded shadow-3xs text-[11px]">
+                                <span className="font-extrabold text-[#1B3022]">{ACTIVITY_DICT[actKey] || actKey}</span>
+                                <span className="font-mono font-black text-[#3A5A40]">{String(count)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Search & Tabs Controls */}
         <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
