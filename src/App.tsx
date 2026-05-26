@@ -1130,11 +1130,6 @@ export default function App() {
               <p>櫃檯: 1111 | 中式: 2222 | 西式: 3333 </p>
               <p>活動組: 4444 | 咖啡廳: 5555 | 主管巡檢: 6666</p>
             </div>
-            {getOfflineModeStatus() && (
-              <div className="text-[11px] text-amber-700 font-bold bg-amber-50 p-2 rounded-lg border border-amber-200">
-                ⚡️ 偵測到靜態網頁平台 (Vercel)，已開啟高可靠 LocalStorage 機制，密碼與核銷功能皆可完美離線運作！
-              </div>
-            )}
           </div>
         </div>
       </div>
