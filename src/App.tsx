@@ -1027,7 +1027,7 @@ export default function App() {
 
   // 計算專屬面板（當天與隔一天、個人與團體的核銷總人數）
   const roleDashboardStats = React.useMemo(() => {
-    if (!user || user.role === 'manager') return null;
+    if (!user || (user.role !== 'cafe' && user.role !== 'activity')) return null;
 
     const tzoffset = (new Date()).getTimezoneOffset() * 60000;
     const todayStr = new Date(Date.now() - tzoffset).toISOString().slice(0, 10);
@@ -1043,45 +1043,49 @@ export default function App() {
       acc[obj.key] = { 
         label: obj.label, 
         dateStr: obj.dateStr, 
-        total: 0, 
-        individual: { total: 0, breakdown: {} as Record<string, number> }, 
-        groups: {} as Record<string, { total: number; breakdown: Record<string, number> }> 
+        individual: 0, 
+        group: 0, 
+        total: 0,
+        individualsDetail: {} as Record<string, number>,
+        groupsDetail: {} as Record<string, Record<string, number>>
       };
       return acc;
     }, {} as Record<string, any>);
 
     const allowedActivities = ROLE_ACTIVITIES[user.role] || [];
+    dates.forEach(d => {
+      allowedActivities.forEach(act => {
+        stats[d.key].individualsDetail[act] = 0;
+      });
+    });
 
     rooms.forEach(room => {
       const isGroup = room.groupType && room.groupType !== 'none';
-      const actualGroupType = isGroup ? room.groupType : null;
       const dailyStates = getRoomDailyActivitiesList(room);
       
       dates.forEach(d => {
-        const matchingStates = dailyStates.filter(ds => 
-          ds.date === d.dateStr && allowedActivities.includes(ds.activityKey) && ds.total > 0
-        );
-        const dailyTotal = matchingStates.reduce((sum, ds) => sum + ds.total, 0);
-        
-        if (dailyTotal > 0) {
-          stats[d.key].total += dailyTotal;
-          if (isGroup && actualGroupType) {
-            if (!stats[d.key].groups[actualGroupType]) {
-              stats[d.key].groups[actualGroupType] = { total: 0, breakdown: {} };
+        allowedActivities.forEach(actKey => {
+          const matchingStates = dailyStates.filter(ds => 
+            ds.date === d.dateStr && ds.activityKey === actKey
+          );
+          const dailyTotal = matchingStates.reduce((sum, ds) => sum + ds.total, 0);
+          
+          if (dailyTotal > 0) {
+            stats[d.key].total += dailyTotal;
+            if (isGroup) {
+              stats[d.key].group += dailyTotal;
+              const gType = room.groupType as string;
+              if (!stats[d.key].groupsDetail[gType]) {
+                stats[d.key].groupsDetail[gType] = {};
+                allowedActivities.forEach(a => stats[d.key].groupsDetail[gType][a] = 0);
+              }
+              stats[d.key].groupsDetail[gType][actKey] += dailyTotal;
+            } else {
+              stats[d.key].individual += dailyTotal;
+              stats[d.key].individualsDetail[actKey] += dailyTotal;
             }
-            stats[d.key].groups[actualGroupType].total += dailyTotal;
-            matchingStates.forEach(ds => {
-              stats[d.key].groups[actualGroupType].breakdown[ds.activityKey] = 
-                (stats[d.key].groups[actualGroupType].breakdown[ds.activityKey] || 0) + ds.total;
-            });
-          } else {
-            stats[d.key].individual.total += dailyTotal;
-            matchingStates.forEach(ds => {
-              stats[d.key].individual.breakdown[ds.activityKey] = 
-                (stats[d.key].individual.breakdown[ds.activityKey] || 0) + ds.total;
-            });
           }
-        }
+        });
       });
     });
 
@@ -1842,61 +1846,55 @@ export default function App() {
                   <div className={`absolute top-0 right-0 w-2 h-full ${key === 'today' ? 'bg-[#3A5A40]' : 'bg-[#8B5E3C]'}`} />
                   <div className="flex justify-between items-center mb-4">
                     <div className="flex items-center gap-2">
-                       <span className={`text-xl font-black ${key === 'today' ? 'text-[#3A5A40]' : 'text-[#8B5E3C]'}`}>{data.label}</span>
+                      <span className={`text-xl font-black ${key === 'today' ? 'text-[#3A5A40]' : 'text-[#8B5E3C]'}`}>{data.label}</span>
                       <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{data.dateStr}</span>
                     </div>
                     <div className="text-right">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block leading-tight">預計服務總票券數</span>
-                      <span className="text-2xl font-black text-slate-800 leading-none">{data.total} <span className="text-sm font-bold text-slate-500">票</span></span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block leading-tight">預計服務總人數</span>
+                      <span className="text-2xl font-black text-slate-800 leading-none">{data.total} <span className="text-sm font-bold text-slate-500">人</span></span>
                     </div>
                   </div>
                   
-                  <div className="space-y-3">
-                    {data.individual.total > 0 && (
-                      <div className="bg-slate-50 border border-slate-100 rounded-lg p-3">
-                        <div className="text-[11px] font-bold text-slate-500 mb-2 flex items-center justify-between">
-                          <span className="flex items-center gap-1.5 text-slate-700">
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                            散客 / 自訂名單
-                          </span>
-                          <span className="text-[10px] font-extrabold text-slate-500 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-3xs">小計 {data.individual.total} 票</span>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {Object.entries(data.individual.breakdown)
-                            .sort((a, b) => (b[1] as number) - (a[1] as number))
-                            .map(([actKey, count]) => (
-                            <div key={actKey} className="flex px-2 py-1 items-center gap-1.5 bg-white border border-slate-200 rounded shadow-3xs text-[11px]">
-                              <span className="font-extrabold text-[#1B3022]">{ACTIVITY_DICT[actKey] || actKey}</span>
-                              <span className="font-mono font-black text-slate-600">{String(count)}</span>
-                            </div>
-                          ))}
-                        </div>
+                  <div className="flex flex-col gap-3">
+                    <div className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                      <div className="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between border-b border-slate-200 pb-2">
+                        <span>散客 / 自訂</span>
+                        <span className="text-[10px] font-extrabold text-slate-400 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-3xs">{data.individual} 人</span>
                       </div>
-                    )}
-
-                    {Object.entries(data.groups).map(([groupType, groupData]) => {
-                      const typedData = groupData as { total: number, breakdown: Record<string, number> };
-                      return (
-                        <div key={groupType} className="bg-slate-50 border border-slate-100 rounded-lg p-3">
-                          <div className="text-[11px] font-bold text-slate-500 mb-2 flex items-center justify-between">
-                            <span className={`inline-flex items-center text-[10px] px-2 py-0.5 rounded text-white font-extrabold shadow-sm ${groupType === 'lion' ? 'bg-[#8B5E3C]' : groupType === 'yirong' ? 'bg-[#D4A373]' : 'bg-[#3A5A40]'}`}>
-                              {groupType === 'lion' ? '雄獅專案 🦁' : groupType === 'yirong' ? '怡容專案 🌸' : '團體專案 👥'}
-                            </span>
-                            <span className="text-[10px] font-extrabold text-[#3A5A40] bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded shadow-3xs">小計 {typedData.total} 票</span>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(data.individualsDetail).filter(([_, count]) => (count as number) > 0).map(([actKey, count]) => (
+                          <div key={actKey} className="text-sm font-bold text-slate-700 bg-white border border-slate-200 px-2 py-1 rounded">
+                            {ACTIVITY_DICT[actKey]} <span className="text-[#3A5A40] ml-1">{String(count)}</span> 人
                           </div>
-                          <div className="flex flex-wrap gap-2">
-                            {Object.entries(typedData.breakdown)
-                              .sort((a, b) => b[1] - a[1])
-                              .map(([actKey, count]) => (
-                              <div key={actKey} className="flex px-2 py-1 items-center gap-1.5 bg-white border border-emerald-100 rounded shadow-3xs text-[11px]">
-                                <span className="font-extrabold text-[#1B3022]">{ACTIVITY_DICT[actKey] || actKey}</span>
-                                <span className="font-mono font-black text-[#3A5A40]">{String(count)}</span>
+                        ))}
+                        {Object.values(data.individualsDetail).reduce((a: any, b: any) => a + b, 0) === 0 && (
+                          <div className="text-xs text-slate-400">目前無資料</div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="bg-slate-50 border border-slate-100 rounded-lg p-3">
+                      <div className="text-xs font-bold text-slate-500 mb-2 flex items-center justify-between border-b border-slate-200 pb-2">
+                        <span>團體專案</span>
+                        <span className="text-[10px] font-extrabold text-[#3A5A40] bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded shadow-3xs">{data.group} 人</span>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {Object.entries(data.groupsDetail).length > 0 ? Object.entries(data.groupsDetail).map(([gType, details]) => (
+                          <div key={gType} className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-bold text-slate-600 bg-slate-200 px-1.5 py-0.5 rounded">
+                              {gType === 'lion' ? '雄獅專案' : gType === 'yirong' ? '怡容專案' : '一般團體'}
+                            </span>
+                            {Object.entries(details as any).filter(([_, count]) => (count as number) > 0).map(([actKey, count]) => (
+                              <div key={actKey} className="text-sm font-bold text-slate-700 bg-white border border-slate-200 px-2 py-1 rounded">
+                                {ACTIVITY_DICT[actKey]} <span className="text-[#3A5A40] ml-1">{String(count)}</span> 人
                               </div>
                             ))}
                           </div>
-                        </div>
-                      );
-                    })}
+                        )) : (
+                          <div className="text-xs text-slate-400">目前無資料</div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
